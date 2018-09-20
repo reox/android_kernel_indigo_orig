@@ -31,12 +31,14 @@ FUNCTIONS:
       QMIWDSSetEventReportReq
       QMIWDSGetPKGSRVCStatusReq
       QMIDMSGetMEIDReq
+      QMICTLSetDataFormatReq
       
    Parse data from QMI responses
       QMICTLGetClientIDResp
       QMICTLReleaseClientIDResp
       QMIWDSEventResp
       QMIDMSGetMEIDResp
+      QMICTLSetDataFormatResp
 
 Copyright (c) 2011, Code Aurora Forum. All rights reserved.
 
@@ -100,6 +102,10 @@ POSSIBILITY OF SUCH DAMAGE.
 // Definitions
 /*=========================================================================*/
 
+/* The following definition is disabled (commented out) by default.
+ * When uncommented it enables raw IP data format mode of operation */
+/*#define DATA_MODE_RP*/
+
 // QMI Service Types
 #define QMICTL 0
 #define QMIWDS 1
@@ -119,6 +125,8 @@ POSSIBILITY OF SUCH DAMAGE.
 #define EINVAL    22
 #define ENOMSG    42
 #define ENODATA   61
+
+#define TLV_TYPE_LINK_PROTO 0x10
 
 /*=========================================================================*/
 // Struct sQMUX
@@ -164,7 +172,7 @@ int FillQMUX(
 // Generic QMI functions
 /*=========================================================================*/
 
-// Get data bufffer of a specified TLV from a QMI message
+// Get data buffer of a specified TLV from a QMI message
 u16 GetTLV(
    void *   pQMIMessage,
    u16      messageLen,
@@ -206,6 +214,9 @@ u16 QMIWDSGetPKGSRVCStatusReqSize( void );
 
 // Get size of buffer needed for QMUX + QMIDMSGetMEIDReq
 u16 QMIDMSGetMEIDReqSize( void );
+
+// Get size of buffer needed for QMUX + QMICTLSetDataFormatReq
+u16  QMICTLSetDataFormatReqSize( void );
 
 /*=========================================================================*/
 // Fill Buffers with QMI requests
@@ -249,6 +260,12 @@ int QMIDMSGetMEIDReq(
    u16      buffSize,
    u16      transactionID );
 
+// Fill buffer with QMI CTL Set Data Format Request
+int QMICTLSetDataFormatReq(
+   void *   pBuffer,
+   u16      buffSize,
+   u8       transactionID );
+
 /*=========================================================================*/
 // Parse data from QMI responses
 /*=========================================================================*/
@@ -287,3 +304,7 @@ int QMIDMSGetMEIDResp(
    char *   pMEID,
    int      meidSize );
 
+// Parse the QMI Set Data Format Resp
+int QMICTLSetDataFormatResp(
+   void *   pBuffer,
+   u16      buffSize);

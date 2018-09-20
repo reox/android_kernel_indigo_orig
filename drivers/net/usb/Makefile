@@ -26,8 +26,12 @@ obj-$(CONFIG_USB_NET_INT51X1)	+= int51x1.o
 obj-$(CONFIG_USB_CDC_PHONET)	+= cdc-phonet.o
 obj-$(CONFIG_USB_IPHETH)	+= ipheth.o
 obj-$(CONFIG_USB_SIERRA_NET)	+= sierra_net.o
-#Joe Lee-0505 begin
-obj-$(CONFIG_USB_GOBI3K_NET) += GobiNet3k.o
-GobiNet3k-objs := GobiUSBNet.o QMI.o QMIDevice.o 
-#Joe Lee-0505 end
+#frank 1202 begin
+obj-$(CONFIG_USB_GOBI3K_NET) += GobiNet.o
+GobiNet-objs := GobiUSBNet.o QMI.o QMIDevice.o
+#frank 1202 end
+obj-$(CONFIG_USB_NET_CX82310_ETH)	+= cx82310_eth.o
+obj-$(CONFIG_USB_NET_CDC_NCM)	+= cdc_ncm.o
+obj-$(CONFIG_USB_VL600)		+= lg-vl600.o
+obj-$(CONFIG_USB_NET_RAW_IP)	+= raw_ip_net.o
 

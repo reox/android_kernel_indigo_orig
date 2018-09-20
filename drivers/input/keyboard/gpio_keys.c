@@ -3,6 +3,8 @@
  *
  * Copyright 2005 Phil Blundell
  *
+ * Copyright 2010-2011 NVIDIA Corporation
+ *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
@@ -328,7 +330,7 @@ static void gpio_keys_report_event(struct gpio_button_data *bdata)
 	struct gpio_keys_button *button = bdata->button;
 	struct input_dev *input = bdata->input;
 	unsigned int type = button->type ?: EV_KEY;
-	int state = (gpio_get_value(button->gpio) ? 1 : 0) ^ button->active_low;
+	int state = (gpio_get_value_cansleep(button->gpio) ? 1 : 0) ^ button->active_low;
 
 	input_event(input, type, button->code, !!state);
 	input_sync(input);
@@ -370,7 +372,10 @@ static ssize_t data_show(struct kobject *kobj, struct kobj_attribute *attr,
 			char *buf)
 {	
 	device_init_wakeup(&test_pdev->dev, 0);	
-    test_pdata->buttons[1].code=KEY_UP;	
+    test_pdata->buttons[0].code=KEY_F21;	
+    test_pdata->buttons[1].code=KEY_F22;	
+    test_pdata->buttons[2].code=KEY_F23;	
+    test_pdata->buttons[3].code=KEY_F24;	
     device_init_wakeup(&test_pdev->dev, 1);
   	                      
 	return sprintf(buf, "OK\n");	
@@ -381,7 +386,10 @@ static ssize_t data_store(struct kobject *kobj, struct kobj_attribute *attr,
 {
  
     device_init_wakeup(&test_pdev->dev, 0);	
-    test_pdata->buttons[1].code=KEY_HOMEPAGE;	
+    test_pdata->buttons[0].code=KEY_WWW;		
+    test_pdata->buttons[1].code=KEY_HOMEPAGE;		
+    test_pdata->buttons[2].code=KEY_BACK;		
+    test_pdata->buttons[3].code=KEY_AUTO_ROTATION;	
     device_init_wakeup(&test_pdev->dev, 1);
 	return count;
 }
@@ -455,8 +463,8 @@ static int __devinit gpio_keys_setup_key(struct platform_device *pdev,
 	if (!button->can_disable)
 		irqflags |= IRQF_SHARED;
 
-	error = request_irq(irq, gpio_keys_isr, irqflags, desc, bdata);
-	if (error) {
+	error = request_any_context_irq(irq, gpio_keys_isr, irqflags, desc, bdata);
+	if (error < 0) {
 		dev_err(dev, "Unable to claim irq %d; error %d\n",
 			irq, error);
 		goto fail3;

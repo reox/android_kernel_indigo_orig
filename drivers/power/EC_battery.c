@@ -121,14 +121,14 @@ struct EC_Bat_device_info {
 struct timer_list poll_timer;    
 unsigned int batt_status_poll_period;    
 int gpio;       
-s16 ThreeGPower_val = 2;
+s16 ThreeGPower_val = 1;
 s16 MicSwitch_val = 2;
 s16 Coldboot_val = 0;
 s16 Resume_val = 0;
 s16 GPS_val = 0;
 s16 PsensorPower_val = 2;
 bool ECflashMode = 0;    //for EC flash
-
+SYMBOL_EXPORT(ThreeGPower_val);
 
 typedef enum
 {
@@ -830,6 +830,22 @@ static ssize_t Coldboot_store(struct kobject *kobj, struct kobj_attribute *attr,
         msleep(100);
         return n;
 
+}
+
+static ssize_t RebootAfterEcUpdate_show(struct kobject *kobj, struct kobj_attribute *attr, char * buf)
+{
+        char * s = buf;
+        s += sprintf(s, "RebootAfterEcUpdate");
+        return (s - buf);
+}
+
+static ssize_t RebootAfterEcUpdate_store(struct kobject *kobj, struct kobj_attribute *attr, const char * buf, size_t n)
+{
+        int buffer;
+        buffer = atoi(buf) & 0x0000FFFF;
+        i2c_smbus_write_word_data(EC_Bat_device->client,0xBA, buffer);
+        msleep(100);
+        return n;
 }
 
 static ssize_t Resume_show(struct kobject *kobj, struct kobj_attribute *attr, char * buf)
@@ -1791,18 +1807,11 @@ static ssize_t SysStatus_show(struct kobject *kobj, struct kobj_attribute *attr,
 
 static ssize_t SysStatus_store(struct kobject *kobj, struct kobj_attribute *attr, const char * buf, size_t n)
 {
-	u16 writeCommand;
-	
-	if(*buf == '0')
-		writeCommand = 0;
-	else if(*buf == '1')
-		writeCommand = 1;
-	else
-		return n;
-
+	int value = atoi(buf);
+	s16 writeValue = value & 0x0000FFFF;
 	Clear_Index();
-	
-	if(i2c_smbus_write_word_data(EC_Bat_device->client,0x7F,writeCommand) != 0)
+
+	if(i2c_smbus_write_word_data(EC_Bat_device->client,0x7F,writeValue) != 0)
 		printk(KERN_ERR "%s error\n", __FUNCTION__);
 	return n;
 }
@@ -1848,6 +1857,7 @@ int GetMultiByteECValue(char * buf,int length,int address)
 	for(x = 0;x < count;x++)
 	{
 		result = i2c_smbus_read_word_data(EC_Bat_device->client,address);
+                msleep(10);
 		if(result < 0)
 		{
 			printk(KERN_ERR "%s i2c_smbus_read_word_data error\n", __FUNCTION__);
@@ -1888,6 +1898,7 @@ int PutMultiByteECValue(const char * buf,int length,int address)
 			printk(KERN_ERR "%s i2c_smbus_write_word_data error\n", __FUNCTION__);
 			return -1;
 		}
+                msleep(10);
 	}
 	return 0;
 }
@@ -2091,16 +2102,16 @@ static ssize_t AssetNumber_show(struct kobject *kobj, struct kobj_attribute *att
 	}
 
         for(i=0;i<15;i++)
-           {
+        {
                val32 = i2c_smbus_read_word_data(EC_Bat_device->client,0x7c);
                val16 = val32 & 0x0000ffff;
-               TransformToByte(val16, &val8[2*i], &val8[2*i+1]);
+               memmove(&val8[i*2],&val16,2);
                msleep(10);
-           }
-        s += sprintf(s, "%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%x\n",
-		val8[29],val8[28],val8[27],val8[26],val8[25],val8[24],val8[23],val8[22],val8[21],val8[20],val8[19],val8[18],val8[17],val8[16],val8[15]);
-
-		return (s - buf);
+        }
+        s += sprintf(s, "%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c",
+                     val8[0],val8[1],val8[2],val8[3],val8[4],val8[5],val8[6],val8[7],val8[8],val8[9],val8[10],val8[11],val8[12],val8[13],val8[14],
+                     val8[15],val8[16],val8[17],val8[18],val8[19],val8[20],val8[21],val8[22],val8[23],val8[24],val8[25],val8[26],val8[27],val8[28],val8[29]);
+        return (s - buf);
 }
 
 
@@ -2117,14 +2128,11 @@ static ssize_t AssetNumber_store(struct kobject *kobj, struct kobj_attribute *at
 	Clear_Index();
 
         for(i=0;i<15;i++)
-           {
-                val8_0 = TransformCharToByte(buf,58-4*i);
-                val8_1 = TransformCharToByte(buf,56-4*i);
-
-                val16 = TransformToWord(val8_0, val8_1);
+        {
+                memmove(&val16,(buf+i*2),2);
                 i2c_smbus_write_word_data(EC_Bat_device->client,0x7d,val16);
                 msleep(10);
-           }
+        }
 
 	return n;
 }
@@ -2274,6 +2282,7 @@ debug_attr(ECWrite);
 debug_attr(Shutdown);
 debug_attr(Suspend);
 debug_attr(Coldboot);
+debug_attr(RebootAfterEcUpdate);
 debug_attr(Resume);
 debug_attr(RecoveryMode);
 debug_attr(ECflashwrite);
@@ -2354,6 +2363,7 @@ static struct attribute * g[] = {
 	&Shutdown_attr.attr,
 	&Suspend_attr.attr,
 	&Coldboot_attr.attr,
+	&RebootAfterEcUpdate_attr.attr,
 	&Resume_attr.attr,
 	&ECflashwrite_attr.attr,
 	&ECflashread_attr.attr,
@@ -2457,6 +2467,16 @@ u16 BoardID(void)
      return cur;
 }
 SYMBOL_EXPORT(BoardID);
+
+//cloud-20111013start
+//for the usb self-connect issue
+bool IsIndigo = false;
+void Block_The_Usb_Charge(bool block)
+{
+	IsIndigo = block;
+}
+SYMBOL_EXPORT(Block_The_Usb_Charge);
+//cloud-20111013end
 
 
 static int EC_Bat_get_battery_presence_and_health(enum power_supply_property psp,
@@ -2607,7 +2627,14 @@ static int EC_Bat_get_battery_property(int reg_offset,
 					if(EC_status == 2)
 						val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
 					else if(EC_status == 1)
+					{
 						val->intval = POWER_SUPPLY_STATUS_CHARGING;
+						//cloud-20111013start
+						//for the usb self-connect issue
+						if(IsIndigo)
+							val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
+						//cloud-20111013end	
+					}
 					else if(EC_status == 0)
 						val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
 					else
@@ -2623,7 +2650,14 @@ static int EC_Bat_get_battery_property(int reg_offset,
 					if(EC_status == 2)
 						val->intval = POWER_SUPPLY_STATUS_FULL;
 					else if(EC_status == 1)
+					{
 						val->intval = POWER_SUPPLY_STATUS_CHARGING;
+						//cloud-20111013start
+						//for the usb self-connect issue
+						if(IsIndigo)
+							val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
+						//cloud-20111013end	
+					}
 					else if(EC_status == 0)
 						val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
 					else
@@ -2727,6 +2761,8 @@ static int EC_Bat_get_battery_capacity(union power_supply_propval *val)
 	/* EC_Bat spec says that this can be >100 %
 	 * even if max value is 100 % */
 	val->intval = ( (ret >= 100) ? 100 : ret);
+
+	printk("battery capacity: %d\n", val->intval);
 	return 0;
 }
 /* carry-0617 begin */
@@ -2832,6 +2868,12 @@ static int bq20z75_get_usb_status(union power_supply_propval *val)
 	{
 		val->intval = 0;
 	}
+
+	//cloud-20111013start
+	//for the usb self-connect issue
+	if(IsIndigo)
+		val->intval = 0;
+	//cloud-20111013end
 	return 0;
 }
 /* compal indigo-Howard Chang 20110513 end */

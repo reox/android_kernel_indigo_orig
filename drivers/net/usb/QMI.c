@@ -22,12 +22,14 @@ FUNCTIONS:
       QMIWDSSetEventReportReq
       QMIWDSGetPKGSRVCStatusReq
       QMIDMSGetMEIDReq
+      QMICTLSetDataFormatReq
 
    Parse data from QMI responses
       QMICTLGetClientIDResp
       QMICTLReleaseClientIDResp
       QMIWDSEventResp
       QMIDMSGetMEIDResp
+      QMICTLSetDataFormatResp
 
 Copyright (c) 2011, Code Aurora Forum. All rights reserved.
 
@@ -208,6 +210,22 @@ u16 QMIDMSGetMEIDReqSize( void )
 {
    return sizeof( sQMUX ) + 7;
 }
+
+/*===========================================================================
+METHOD:
+   QMICTLSetDataFormatReqSize (Public Method)
+
+DESCRIPTION:
+   Get size of buffer needed for QMUX + QMICTLSetDataFormatReq
+ 
+RETURN VALUE:
+   u16 - size of buffer
+===========================================================================*/
+u16  QMICTLSetDataFormatReqSize( void )
+{
+   return sizeof( sQMUX ) + 15; 
+}
+
 
 /*=========================================================================*/
 // Generic QMUX functions
@@ -710,6 +728,76 @@ int QMIDMSGetMEIDReq(
    return sizeof( sQMUX ) + 7;
 }
 
+/*===========================================================================
+METHOD:
+   QMICTLSetDataFormatReq (Public Method)
+
+DESCRIPTION:
+   Fill buffer with QMI CTL Set Data Format Request
+
+PARAMETERS
+   pBuffer         [ 0 ] - Buffer to be filled
+   buffSize        [ I ] - Size of pBuffer
+   transactionID   [ I ] - Transaction ID
+
+RETURN VALUE:
+   int - Positive for resulting size of pBuffer
+         Negative errno for error
+===========================================================================*/
+int QMICTLSetDataFormatReq(
+   void *   pBuffer,
+   u16      buffSize,
+   u8       transactionID )
+{
+   if (pBuffer == 0 || buffSize < QMICTLSetDataFormatReqSize() )
+   {
+      return -ENOMEM;
+   }
+
+   /* QMI CTL Set Data Format Request */
+   /* Request */
+   *(u8 *)(pBuffer + sizeof( sQMUX ))  = 0x00; // QMICTL_FLAG_REQUEST
+   
+   /* Transaction ID 1 byte */
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 1) = transactionID; /* 1 byte as in spec */
+
+   /* QMICTLType  2 bytes */
+   put_unaligned( cpu_to_le16(0x0026), (u16 *)(pBuffer + sizeof( sQMUX ) + 2));
+
+   /* Length  2 bytes  of 2 TLVs  each - see spec */
+   put_unaligned( cpu_to_le16(0x0009), (u16 *)(pBuffer + sizeof( sQMUX ) + 4));
+
+   /* TLVType Data Format (Mandatory)  1 byte  */
+   *(u8 *)(pBuffer + sizeof( sQMUX ) +  6) = 0x01; // type data format
+
+   /* TLVLength  2 bytes - see spec */
+   put_unaligned( cpu_to_le16(0x0001), (u16 *)(pBuffer + sizeof( sQMUX ) + 7)); 
+
+   /* DataFormat: 0-default; 1-QoS hdr present 2 bytes */
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 9) = 0; /*  recommended no-QOS header */
+
+    /* TLVType Link-Layer Protocol  (Optional) 1 byte */
+    *(u8 *)(pBuffer + sizeof( sQMUX ) + 10) = TLV_TYPE_LINK_PROTO;
+
+    /* TLVLength 2 bytes */
+    put_unaligned( cpu_to_le16(0x0002), (u16 *)(pBuffer + sizeof( sQMUX ) + 11));
+
+   /* LinkProt: 0x1 - ETH; 0x2 - rawIP  2 bytes */
+#ifdef DATA_MODE_RP
+   /* Set RawIP mode */
+   put_unaligned( cpu_to_le16(0x0002), (u16 *)(pBuffer + sizeof( sQMUX ) + 13));
+   DBG("Request RawIP Data Format\n");
+#else
+   /* Set Ethernet  mode */
+   put_unaligned( cpu_to_le16(0x0001), (u16 *)(pBuffer + sizeof( sQMUX ) + 13));
+   DBG("Request Ethernet Data Format\n");
+#endif
+
+   /* success */
+   return sizeof( sQMUX ) + 15;
+
+}
+
 /*=========================================================================*/
 // Parse data from QMI responses
 /*=========================================================================*/
@@ -1006,4 +1094,83 @@ int QMIDMSGetMEIDResp(
 
    return 0;
 }
+
+/*===========================================================================
+METHOD:
+   QMICTLSetDataFormatResp (Public Method)
+
+DESCRIPTION:
+   Parse the QMI CTL Set Data Format Response
+
+PARAMETERS
+   pBuffer         [ I ] - Buffer to be parsed
+   buffSize        [ I ] - Size of pBuffer
+
+RETURN VALUE:
+   int - 0 for success
+         Negative errno for error
+===========================================================================*/
+int QMICTLSetDataFormatResp(
+   void *   pBuffer,
+   u16      buffSize )
+{
+
+   int result;
+
+   u8 pktLinkProtocol[2];
+
+   // Ignore QMUX and SDU
+   //    QMI CTL SDU is 2 bytes, not 3
+   u8 offset = sizeof( sQMUX ) + 2;
+
+   if (pBuffer == 0 || buffSize < offset)
+   {
+      return -ENOMEM;
+   }
+
+   pBuffer = pBuffer + offset;
+   buffSize -= offset;
+
+   result = GetQMIMessageID( pBuffer, buffSize );
+   if (result != 0x26)
+   {
+      return -EFAULT;
+   }
+
+   /* Check response message result TLV */
+   result = ValidQMIMessage( pBuffer, buffSize );
+   if (result != 0)
+   {
+      DBG("EFAULT: Data Format Mode Bad Response\n"); 
+      return -EFAULT;
+   }
+
+   /* Check response message link protocol */
+   result = GetTLV( pBuffer, buffSize, TLV_TYPE_LINK_PROTO,
+                     &pktLinkProtocol[0], 2);
+   if (result != 2)
+   {
+      DBG("EFAULT: Wrong TLV format\n"); 
+      return -EFAULT;
+   }
+
+#ifdef DATA_MODE_RP
+   if (pktLinkProtocol[0] != 2)
+   {
+      DBG("EFAULT: Data Format Cannot be set to RawIP Mode\n"); 
+      return -EFAULT;
+   }
+   DBG("Data Format Set to RawIP\n");
+#else
+   if (pktLinkProtocol[0] != 1)
+   {
+      DBG("EFAULT: Data Format Cannot be set to Ethernet Mode\n"); 
+      return -EFAULT;
+   }
+   DBG("Data Format Set to Ethernet Mode \n");
+#endif
+
+   return 0;
+}
+
 

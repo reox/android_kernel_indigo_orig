@@ -39,6 +39,10 @@ int get_touch_screen_border_left(void);
 int get_touch_screen_border_right(void);
 int get_touch_screen_border_down(void);
 int get_touch_screen_border_up(void);
+int get_touch_screen_border_pen_left(void);
+int get_touch_screen_border_pen_right(void);
+int get_touch_screen_border_pen_down(void);
+int get_touch_screen_border_pen_up(void);
 
 
 #endif /* _NTRIG_DISPATCHER_SYSFS_H */

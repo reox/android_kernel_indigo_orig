@@ -43,7 +43,6 @@
 #include <linux/mii.h>
 #include <linux/usb.h>
 #include <linux/usb/usbnet.h>
-#include <linux/usb/cdc.h>
 #include <linux/slab.h>
 #include <linux/kernel.h>
 #include <linux/pm_runtime.h>
@@ -101,7 +100,6 @@ int usbnet_get_endpoints(struct usbnet *dev, struct usb_interface *intf)
 	struct usb_host_interface	*alt = NULL;
 	struct usb_host_endpoint	*in = NULL, *out = NULL;
 	struct usb_host_endpoint	*status = NULL;
-	struct cdc_state		*info = (struct cdc_state *)&dev->data;
 
 	for (tmp = 0; tmp < intf->num_altsetting; tmp++) {
 		unsigned	ep;
@@ -116,10 +114,6 @@ int usbnet_get_endpoints(struct usbnet *dev, struct usb_interface *intf)
 		for (ep = 0; ep < alt->desc.bNumEndpoints; ep++) {
 			struct usb_host_endpoint	*e;
 			int				intr = 0;
-
-			if (info->ncm && alt->desc.bInterfaceProtocol !=
-			NCM_DATA_CLASS_PROTOCOCL_CODE)
-				continue;
 
 			e = alt->endpoint + ep;
 			switch (e->desc.bmAttributes) {
@@ -393,8 +387,12 @@ static int rx_submit (struct usbnet *dev, struct urb *urb, gfp_t flags)
 static inline void rx_process (struct usbnet *dev, struct sk_buff *skb)
 {
 	if (dev->driver_info->rx_fixup &&
-	    !dev->driver_info->rx_fixup (dev, skb))
-		goto error;
+	    !dev->driver_info->rx_fixup (dev, skb)) {
+		/* With RX_ASSEMBLE, rx_fixup() must update counters */
+		if (!(dev->driver_info->flags & FLAG_RX_ASSEMBLE))
+			dev->net->stats.rx_errors++;
+		goto done;
+	}
 	// else network stack removes extra byte if we forced a short packet
 
 	if (skb->len) {
@@ -407,8 +405,8 @@ static inline void rx_process (struct usbnet *dev, struct sk_buff *skb)
 	}
 
 	netif_dbg(dev, rx_err, dev->net, "drop\n");
-error:
 	dev->net->stats.rx_errors++;
+done:
 	skb_queue_tail(&dev->done, skb);
 }
 
@@ -647,6 +645,7 @@ int usbnet_stop (struct net_device *net)
 	struct driver_info	*info = dev->driver_info;
 	int			retval;
 
+	clear_bit(EVENT_DEV_OPEN, &dev->flags);
 	netif_stop_queue (net);
 
 	netif_info(dev, ifdown, dev->net,
@@ -738,6 +737,7 @@ int usbnet_open (struct net_device *net)
 		}
 	}
 
+	set_bit(EVENT_DEV_OPEN, &dev->flags);
 	netif_start_queue (net);
 	netif_info(dev, ifup, dev->net,
 		   "open: enable queueing (rx %d, tx %d) mtu %d %s framing\n",
@@ -937,8 +937,10 @@ fail_halt:
 		if (urb != NULL) {
 			clear_bit (EVENT_RX_MEMORY, &dev->flags);
 			status = usb_autopm_get_interface(dev->intf);
-			if (status < 0)
+			if (status < 0) {
+				usb_free_urb(urb);
 				goto fail_lowmem;
+			}
 			if (rx_submit (dev, urb, GFP_KERNEL) == -ENOLINK)
 				resched = 0;
 			usb_autopm_put_interface(dev->intf);
@@ -1254,11 +1256,13 @@ void usbnet_disconnect (struct usb_interface *intf)
 	net = dev->net;
 	unregister_netdev (net);
 
-	/* we don't hold rtnl here ... */
-	flush_scheduled_work ();
+	cancel_work_sync(&dev->kevent);
 
 	if (dev->driver_info->unbind)
 		dev->driver_info->unbind (dev, intf);
+
+	usb_kill_urb(dev->interrupt);
+	usb_free_urb(dev->interrupt);
 
 	free_netdev(net);
 	usb_put_dev (xdev);
@@ -1381,7 +1385,8 @@ usbnet_probe (struct usb_interface *udev, const struct usb_device_id *prod)
 		// else "eth%d" when there's reasonable doubt.  userspace
 		// can rename the link if it knows better.
 		if ((dev->driver_info->flags & FLAG_ETHER) != 0 &&
-		    (net->dev_addr [0] & 0x02) == 0)
+		    ((dev->driver_info->flags & FLAG_POINTTOPOINT) == 0 ||
+		     (net->dev_addr [0] & 0x02) == 0))
 			strcpy (net->name, "eth%d");
 		/* WLAN devices should always be named "wlan%d" */
 		if ((dev->driver_info->flags & FLAG_WLAN) != 0)
@@ -1389,6 +1394,9 @@ usbnet_probe (struct usb_interface *udev, const struct usb_device_id *prod)
 		/* WWAN devices should always be named "wwan%d" */
 		if ((dev->driver_info->flags & FLAG_WWAN) != 0)
 			strcpy(net->name, "wwan%d");
+		/* RMNET devices should always be named "rmnet%d" */
+		if ((dev->driver_info->flags & FLAG_RMNET) != 0)
+			strcpy(net->name, "rmnet%d");
 
 		/* maybe the remote can't receive an Ethernet MTU */
 		if (net->mtu > (dev->hard_mtu - net->hard_header_len))
@@ -1498,6 +1506,10 @@ int usbnet_resume (struct usb_interface *intf)
 	int                     retval;
 
 	if (!--dev->suspend_count) {
+		/* resume interrupt URBs */
+		if (dev->interrupt && test_bit(EVENT_DEV_OPEN, &dev->flags))
+			usb_submit_urb(dev->interrupt, GFP_NOIO);
+
 		spin_lock_irq(&dev->txq.lock);
 		while ((res = usb_get_from_anchor(&dev->deferred))) {
 
@@ -1516,9 +1528,12 @@ int usbnet_resume (struct usb_interface *intf)
 		smp_mb();
 		clear_bit(EVENT_DEV_ASLEEP, &dev->flags);
 		spin_unlock_irq(&dev->txq.lock);
-		if (!(dev->txq.qlen >= TX_QLEN(dev)))
-			netif_start_queue(dev->net);
-		tasklet_schedule (&dev->bh);
+
+		if (test_bit(EVENT_DEV_OPEN, &dev->flags)) {
+			if (!(dev->txq.qlen >= TX_QLEN(dev)))
+				netif_start_queue(dev->net);
+			tasklet_schedule (&dev->bh);
+		}
 	}
 	return 0;
 }

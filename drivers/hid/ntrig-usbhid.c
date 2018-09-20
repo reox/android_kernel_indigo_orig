@@ -1,7 +1,7 @@
 /*
  *  HID driver for N-Trig touchscreens
  *
- *  Copyright (c) 2011 N-TRIG
+ *  Copyright (c) 2011 N-TRIG 
  *
  */
 
@@ -765,6 +765,8 @@ static int ntrig_usbhid_probe(struct hid_device *hdev, const struct hid_device_i
 		ncp_func.dev = (void *) hdev;
 		ncp_func.read = NTRIGReadNCP;
 		ncp_func.write = NTRIGWriteNCP;
+		ncp_func.read_counters = NULL;//counters not implemented in USB driver
+		ncp_func.reset_counters = NULL;//counters not implemented in USB driver
 		nd->sensor_id = RegNtrigDispatcher(TYPE_BUS_USB_HID, hdev->uniq, &ncp_func, NULL);
 		// TODO: define behavior in case of fail
 		if (nd->sensor_id == DTRG_FAILED) {

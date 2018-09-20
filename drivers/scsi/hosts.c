@@ -286,6 +286,10 @@ static void scsi_host_dev_release(struct device *dev)
 {
 	struct Scsi_Host *shost = dev_to_shost(dev);
 	struct device *parent = dev->parent;
+	/* Compal Earvin 20120310 begin */
+	/* refer from git.kernel.org */
+	struct request_queue *q;
+	/* Compal Earvin 20120310 end */
 
 	scsi_proc_hostdir_rm(shost->hostt);
 
@@ -293,10 +297,21 @@ static void scsi_host_dev_release(struct device *dev)
 		kthread_stop(shost->ehandler);
 	if (shost->work_q)
 		destroy_workqueue(shost->work_q);
+	/* Compal Earvin 20120310 begin */
+	/* refer from git.kernel.org */
+	/*
 	if (shost->uspace_req_q) {
 		kfree(shost->uspace_req_q->queuedata);
 		scsi_free_queue(shost->uspace_req_q);
 	}
+	*/
+	q = shost->uspace_req_q;
+	if (q) {
+		kfree(q->queuedata);
+		q->queuedata = NULL;
+		scsi_free_queue(q);
+	}
+	/* Compal Earvin 20120310 end */
 
 	scsi_destroy_command_freelist(shost);
 	if (shost->bqt)
@@ -376,6 +391,7 @@ struct Scsi_Host *scsi_host_alloc(struct scsi_host_template *sht, int privsize)
 	shost->this_id = sht->this_id;
 	shost->can_queue = sht->can_queue;
 	shost->sg_tablesize = sht->sg_tablesize;
+	shost->sg_prot_tablesize = sht->sg_prot_tablesize;
 	shost->cmd_per_lun = sht->cmd_per_lun;
 	shost->unchecked_isa_dma = sht->unchecked_isa_dma;
 	shost->use_clustering = sht->use_clustering;
@@ -411,9 +427,7 @@ struct Scsi_Host *scsi_host_alloc(struct scsi_host_template *sht, int privsize)
 
 	device_initialize(&shost->shost_gendev);
 	dev_set_name(&shost->shost_gendev, "host%d", shost->host_no);
-#ifndef CONFIG_SYSFS_DEPRECATED
 	shost->shost_gendev.bus = &scsi_bus_type;
-#endif
 	shost->shost_gendev.type = &scsi_host_type;
 
 	device_initialize(&shost->shost_dev);

@@ -31,10 +31,14 @@ void config_multi_touch(lp_ntrig_bus_device dev, struct input_dev*	input_device)
 
 	__set_bit(ABS_MT_POSITION_X,	input_device->absbit);
 	__set_bit(ABS_MT_POSITION_Y,	input_device->absbit);
-	__set_bit(ABS_MT_TOUCH_MAJOR,	input_device->absbit);
 	__set_bit(ABS_MT_WIDTH_MAJOR,	input_device->absbit);
-
-
+#ifdef MT_REPORT_TYPE_B
+	__set_bit(ABS_MT_WIDTH_MINOR,	input_device->absbit);
+	__set_bit(ABS_MT_PRESSURE,		input_device->absbit);
+	__set_bit(ABS_MT_TOOL_TYPE,     input_device->absbit);
+#else
+	__set_bit(ABS_MT_TOUCH_MAJOR,	input_device->absbit);
+#endif
 	/**
 	 *   [48/0x30] - ABS_MT_TOUCH_MAJOR  0 .. 40
 	 *   [50/0x32] - ABS_MT_WIDTH_MAJOR  0 .. 8000
@@ -65,9 +69,15 @@ void config_multi_touch(lp_ntrig_bus_device dev, struct input_dev*	input_device)
 		input_set_abs_params(input_device, ABS_MT_POSITION_Y	, dev->logical_min_y, 	dev->logical_max_y, 	0, 0);
 	}
 
-	input_set_abs_params(input_device, ABS_MT_TOUCH_MAJOR, 0, 			ABS_MT_TOUCH_MAJOR_MAX, 	0, 0);
+	
 	input_set_abs_params(input_device, ABS_MT_WIDTH_MAJOR, 0, 			ABS_MT_WIDTH_MAX, 	0, 0);
 	input_set_abs_params(input_device, ABS_MT_WIDTH_MINOR, 0, 			ABS_MT_WIDTH_MAX, 	0, 0);
+#ifdef MT_REPORT_TYPE_B
+	input_set_abs_params(input_device, ABS_MT_PRESSURE, 1, 255, 	0, 0);
+	input_set_abs_params(input_device, ABS_MT_TOOL_TYPE, 0, 1, 	0, 0);
+#else
+	input_set_abs_params(input_device, ABS_MT_TOUCH_MAJOR, 0, 			ABS_MT_TOUCH_MAJOR_MAX, 	0, 0);
+#endif
 	/** ABS_MT_ORIENTATION: we use 0 or 1 values, we only detect
 	 *  90 degree rotation (by looking at the maximum of dx and
 	 *  dy reported by sensor */

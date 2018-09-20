@@ -112,6 +112,11 @@ static int psensor_probe(struct platform_device *pdev)
     ret = switch_dev_register(&psensor->sdev);
     if (ret < 0)
         goto err_register_switch;
+	
+	/*Joe Lee-1206 begin*/
+	/*Enable gpio before use it*/
+	tegra_gpio_enable(psensor->gpio);
+	/*Joe Lee-1206 end*/
 
     ret = gpio_request(psensor->gpio, pdev->name);
     if (ret < 0)

@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/board-ventana-panel.c
  *
- * Copyright (c) 2010, NVIDIA Corporation.
+ * Copyright (c) 2010-2011, NVIDIA Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,7 +26,7 @@
 #include <linux/platform_device.h>
 #include <linux/earlysuspend.h>
 #include <linux/pwm_backlight.h>
-#include <mach/nvhost.h>
+#include <linux/nvhost.h>
 #include <mach/nvmap.h>
 #include <mach/irqs.h>
 #include <mach/iomap.h>
@@ -43,15 +43,21 @@
 #define ventana_bl_enb		TEGRA_GPIO_PD4
 #define ventana_lvds_shutdown	TEGRA_GPIO_PB2
 #define ventana_hdmi_hpd	TEGRA_GPIO_PN7
-//#define ventana_hdmi_enb	TEGRA_GPIO_PV5
+#define ventana_hdmi_enb	TEGRA_GPIO_PV5
 
-/* Charles 0511 start 
-*  Set backlight disable when power on cause by charging*/
-extern tegra_charging;
-/* Charles 0511 end*/
+/*panel power on sequence timing*/
+#define ventana_pnl_to_lvds_ms	0
+#define ventana_lvds_to_bl_ms	200
+
+#ifdef CONFIG_TEGRA_DC
+
+/* Compal Earvin 20111103 begin */
+extern isBatteryFail;
+/* Compal Earvin 20111103 end */
 
 static struct regulator *ventana_hdmi_reg = NULL;
 static struct regulator *ventana_hdmi_pll = NULL;
+#endif
 
 //cloud-0510start
 //receive lcd type from bootloader
@@ -70,20 +76,6 @@ bool lcd_resume = true;
 
 static int ventana_backlight_init(struct device *dev) {
 	int ret;
-
-	/* Charles 0511 start 
-	*  Set backlight disable when power on cause by charging*/
-
-/* nike-20110616 start */
-/* mark this section for charge logo */
-#if 0
-	if(tegra_charging){
-		return 0;
-	}
-#endif
-/* nike-20110616 end */
-
-	/* Charles 0511 end  */
 
 	ret = gpio_request(ventana_bl_enb, "backlight_enb");
 	if (ret < 0)
@@ -106,18 +98,7 @@ static void ventana_backlight_exit(struct device *dev) {
 
 static int ventana_backlight_notify(struct device *unused, int brightness)
 {
-//cloud-0601start
-//resume: backlight enable delay 180ms to decrease garbage
-	//gpio_set_value(ventana_bl_enb, !!brightness);
-	if(lcd_resume && brightness != 0){
-		msleep(180);
-		gpio_set_value(ventana_bl_enb, 1);
-		lcd_resume = false;
-	}
-
-	if(brightness == 0)
-		gpio_set_value(ventana_bl_enb, 0);
-//cloud-0601end
+	gpio_set_value(ventana_bl_enb, !!brightness);
 	return brightness;
 }
 
@@ -126,7 +107,7 @@ static int ventana_disp1_check_fb(struct device *dev, struct fb_info *info);
 static struct platform_pwm_backlight_data ventana_backlight_data = {
 	.pwm_id		= 2,
 	.max_brightness	= 255,
-	.dft_brightness	= 224,
+	.dft_brightness	= 128, /* Compal Earvin 20120319 change default brightness*/
 	.pwm_period_ns	= 1600000,//5000000,
 	.init		= ventana_backlight_init,
 	.exit		= ventana_backlight_exit,
@@ -143,28 +124,25 @@ static struct platform_device ventana_backlight_device = {
 	},
 };
 
+#ifdef CONFIG_TEGRA_DC
 static int ventana_panel_enable(void)
 {
-//cloud-0601start
-	lcd_resume = true;
-//cloud-0601end
-
 	struct regulator *reg = regulator_get(NULL, "vdd_ldo4");
 
-	regulator_enable(reg);
-	regulator_put(reg);
+	if (!reg) {
+		regulator_enable(reg);
+		regulator_put(reg);
+	}
 
 	gpio_set_value(ventana_pnl_pwr_enb, 1);
+	mdelay(ventana_pnl_to_lvds_ms);
 	gpio_set_value(ventana_lvds_shutdown, 1);
+	mdelay(ventana_lvds_to_bl_ms);
 	return 0;
 }
 
 static int ventana_panel_disable(void)
 {
-//cloud-0601start
-	lcd_resume = false;
-//cloud-0601end
-
 	gpio_set_value(ventana_lvds_shutdown, 0);
 	gpio_set_value(ventana_pnl_pwr_enb, 0);
 	return 0;
@@ -283,7 +261,7 @@ static struct tegra_dc_mode LG_panel_modes[] = {
 
 static struct tegra_dc_mode SEC_panel_modes[] = {
 	{
-		.pclk = 57000000,//68940000,
+		.pclk = 71500000,//57000000,//68940000,
 		.h_ref_to_sync = 11,
 		.v_ref_to_sync = 1,
 		.h_sync_width = 58,//48,
@@ -299,7 +277,7 @@ static struct tegra_dc_mode SEC_panel_modes[] = {
 
 static struct tegra_dc_mode HYDIS_panel_modes[] = {
 	{
-		.pclk = 57000000,//71100000,
+		.pclk = 71500000,//57000000,//71100000,
 		.h_ref_to_sync = 11,
 		.v_ref_to_sync = 1,
 		.h_sync_width = 32,
@@ -319,6 +297,7 @@ static struct tegra_fb_data ventana_fb_data = {
 	.xres		= 1280,
 	.yres		= 800,
 	.bits_per_pixel	= 32,
+	.flags		= TEGRA_FB_FLIP_ON_PROBE,
 };
 
 static struct tegra_fb_data ventana_hdmi_fb_data = {
@@ -326,6 +305,7 @@ static struct tegra_fb_data ventana_hdmi_fb_data = {
 	.xres		= 1280,
 	.yres		= 800,
 	.bits_per_pixel	= 32,
+	.flags		= TEGRA_FB_FLIP_ON_PROBE,
 };
 
 static struct tegra_dc_out ventana_disp1_out = {
@@ -504,15 +484,15 @@ static struct nvhost_device ventana_disp2_device = {
 		.platform_data = &ventana_disp2_pdata,
 	},
 };
+#else
+static int ventana_disp1_check_fb(struct device *dev, struct fb_info *info)
+{
+	return 0;
+}
+#endif
 
 static struct nvmap_platform_carveout ventana_carveouts[] = {
-	[0] = {
-		.name		= "iram",
-		.usage_mask	= NVMAP_HEAP_CARVEOUT_IRAM,
-		.base		= TEGRA_IRAM_BASE,
-		.size		= TEGRA_IRAM_SIZE,
-		.buddy_size	= 0, /* no buddy allocation for IRAM */
-	},
+	[0] = NVMAP_HEAP_CARVEOUT_IRAM_INIT,
 	[1] = {
 		.name		= "generic-0",
 		.usage_mask	= NVMAP_HEAP_CARVEOUT_GENERIC,
@@ -535,7 +515,9 @@ static struct platform_device ventana_nvmap_device = {
 
 static struct platform_device *ventana_gfx_devices[] __initdata = {
 	&ventana_nvmap_device,
+#ifdef CONFIG_TEGRA_GRHOST
 	&tegra_grhost_device,
+#endif
 	&tegra_pwfm2_device,
 	&ventana_backlight_device,
 };
@@ -548,23 +530,48 @@ struct early_suspend ventana_panel_early_suspender;
 
 static void ventana_panel_early_suspend(struct early_suspend *h)
 {
+	/* power down LCD, add use a black screen for HDMI */
 	if (num_registered_fb > 0)
 		fb_blank(registered_fb[0], FB_BLANK_POWERDOWN);
+	if (num_registered_fb > 1)
+		fb_blank(registered_fb[1], FB_BLANK_NORMAL);
+#ifdef CONFIG_TEGRA_CONVSERVATIVE_GOV_ON_EARLYSUPSEND
+	cpufreq_save_default_governor();
+	cpufreq_set_conservative_governor();
+        cpufreq_set_conservative_governor_param("up_threshold",
+			SET_CONSERVATIVE_GOVERNOR_UP_THRESHOLD);
+
+	cpufreq_set_conservative_governor_param("down_threshold",
+			SET_CONSERVATIVE_GOVERNOR_DOWN_THRESHOLD);
+
+	cpufreq_set_conservative_governor_param("freq_step",
+		SET_CONSERVATIVE_GOVERNOR_FREQ_STEP);
+#endif
 }
 
 static void ventana_panel_late_resume(struct early_suspend *h)
 {
-	if (num_registered_fb > 0)
-		fb_blank(registered_fb[0], FB_BLANK_UNBLANK);
+	unsigned i;
+#ifdef CONFIG_TEGRA_CONVSERVATIVE_GOV_ON_EARLYSUPSEND
+	cpufreq_restore_default_governor();
+#endif
+	for (i = 0; i < num_registered_fb; i++)
+		fb_blank(registered_fb[i], FB_BLANK_UNBLANK);
 }
 #endif
 
 int __init ventana_panel_init(void)
 {
 	int err;
-	struct resource *res;
+	struct resource __maybe_unused *res;
 
 	gpio_request(ventana_pnl_pwr_enb, "pnl_pwr_enb");
+	/* Compal Earvin 20111103 begin */
+	if (isBatteryFail) {
+		ventana_backlight_data.dft_brightness = 0;
+		printk("ventana_panel_init - Disable panel power when battery fail\n");
+	}
+	/* Compal Earvin 20111103 end */
 	gpio_direction_output(ventana_pnl_pwr_enb, 1);
 	tegra_gpio_enable(ventana_pnl_pwr_enb);
 
@@ -626,7 +633,12 @@ int __init ventana_panel_init(void)
 	res->start = tegra_fb2_start;
 	res->end = tegra_fb2_start + tegra_fb2_size - 1;
 
-//cloud-0510start
+	/* Copy the bootloader fb to the fb. */
+	tegra_move_framebuffer(tegra_fb_start, tegra_bootloader_fb_start,
+		min(tegra_fb_size, tegra_bootloader_fb_size));
+
+#if defined(CONFIG_TEGRA_GRHOST) && defined(CONFIG_TEGRA_DC)
+	//cloud-0510start
 	if (!err)
 	{
 		if(lcd_type == 1)
@@ -642,6 +654,7 @@ int __init ventana_panel_init(void)
 
 	if (!err)
 		err = nvhost_device_register(&ventana_disp2_device);
+#endif
 
 	return err;
 }

@@ -32,7 +32,7 @@
 /** the	maximum	length of a	data link packet, not including
  *  the	data link header and 2 bytes from message (channel
  *  and	function) */
-#define MAX_DATA_SIZE			134
+#define MAX_DATA_SIZE			256
 
 /** the 4 byte preamble before filter pattern of each bus
  *  message (sent or received)
@@ -114,7 +114,7 @@ struct _ntrig_low_msg {
  * includes a preamble, signature, followed by the message 
  * itself 
  */
-static struct _ntrig_low_bus_msg {
+struct _ntrig_low_bus_msg {
 	u32 preamble;
 	u8 pattern[4];
 	struct _ntrig_low_msg msg;
@@ -132,16 +132,36 @@ struct _ntrig_low_mt_finger {
 	u32 vendorDefined;
 } __attribute__((packed));
 
-/** the	maximum	number of fingers we send in a multi-touch
- *  report */
-#define MAX_MT_FINGERS			6
+/** the	maximum	number of fingers sent in a multi-touch
+ *  report from G3.x sensor */
+#define MAX_MT_FINGERS_G3			6
+
+/** the maximum number of fingers sent in multi-touch report
+ *  from G4 sensor */
+#define MAX_MT_FINGERS_G4			10
+
+/** sensor multi-touch report received over SPI: fingers and
+ *  contact count from G3 sensor (6 fingers) */
+struct _ntrig_mt_report_fingers_g3 {
+	struct _ntrig_low_mt_finger fingers[MAX_MT_FINGERS_G3];
+	u8 contactCount; /* number of fingers */
+}__attribute__((packed));
+
+/** sensor multi-touch report received over SPI: fingers and
+ *  contact count from G4 sensor (10 fingers) */
+struct _ntrig_mt_report_fingers_g4 {
+	struct _ntrig_low_mt_finger fingers[MAX_MT_FINGERS_G4];
+	u8 contactCount; /* number of fingers */
+}__attribute__((packed));
 
 /** describes a	multi-touch	report received	over spi */
 struct _ntrig_low_mt_report {
 	u8 reportId;
 	u16 reportCount;
-	struct _ntrig_low_mt_finger fingers[MAX_MT_FINGERS];
-	u8 contactCount; /* number of fingers */
+	union {
+		struct _ntrig_mt_report_fingers_g3 g3fingers;
+		struct _ntrig_mt_report_fingers_g4 g4fingers;
+	};
 } __attribute__((packed));
 
 /** describes a	pen	report received	over spi */
@@ -224,6 +244,11 @@ int process_low_sm_data_packet(struct _ntrig_low_sm_info* info);
  * process_low_sm_data_packet above 
  */
 int has_complete_low_message(struct _ntrig_low_sm_info* info);
+
+/**
+ * return 1 if the state machine is idle.
+ */
+int is_state_machine_idle(struct _ntrig_low_sm_info* info);
 
 /**
  * build a complete message for sending a short (1 byte) command

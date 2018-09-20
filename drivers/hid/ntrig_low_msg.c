@@ -57,7 +57,7 @@ static char FILTER_PATTERN[] = {0xA5, 0x5A, 0xE7, 0x7E};
  *  machine. When the state	machine	encountered	a packet
  *  larger then	this size, it assumes a	corruption and goes
  *  back to	idle state,	to minimize	packet loss	 */
-#define 	MAX_TRACKED_PACKET_SIZE		150
+#define 	MAX_TRACKED_PACKET_SIZE		264
 
 /** number of bytes from tracer/insight that should be dropped from packet */
 #define BULK_DATA			5
@@ -99,7 +99,7 @@ int process_low_sm_data_packet(struct _ntrig_low_sm_info* info)
 		u8 b = *info->data;
 		info->data++;
 		info->amountProcessed++;
-		//ntrig_dbg("%s: got %d state %d substate %d\n", __FUNCTION__, b, info->state, info->substate);
+		ntrig_dbg_lvl(NTRIG_DEBUG_LEVEL_ALL, "%s: got %d state %d substate %d\n", __FUNCTION__, b, info->state, info->substate);
 		switch(info->state) {
 		case STATE_IDLE:
 			/* in idle state, just count the number of successive 0xFF bytes in order to detect a valid preamble.
@@ -209,6 +209,14 @@ int has_complete_low_message(struct _ntrig_low_sm_info* info)
 }
 
 /**
+ * return 1 if the state machine is idle.
+ */
+int is_state_machine_idle(struct _ntrig_low_sm_info* info)
+{
+	return (info->state == STATE_IDLE);
+}
+
+/**
  * build a complete message for sending a short (1 byte) command
  * to the sensor. Examples of commands: start calibration, get 
  * calibration result, ... 
@@ -264,7 +272,6 @@ void build_low_bus_msg_short_cmd(u8 cmd, struct _ntrig_low_bus_msg* msg)
 void build_ncp_dfu_cmd(u8 cmd, const char* buf, short msg_len, char* out_buf)
 {
 	int i;
-	u8 len;
 	struct _ntrig_low_bus_msg* msg = (struct _ntrig_low_bus_msg*)out_buf;
 	char* data;
 	u32 sum;

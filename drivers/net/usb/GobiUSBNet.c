@@ -6,8 +6,8 @@ DESCRIPTION:
    Qualcomm USB Network device for Gobi 3000
 
 FUNCTIONS:
-   GobiSuspend
-   GobiResume
+   GobiNetSuspend
+   GobiNetResume
    GobiNetDriverBind
    GobiNetDriverUnbind
    GobiUSBNetURBCallback
@@ -83,13 +83,15 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "Structs.h"
 #include "QMIDevice.h"
 #include "QMI.h"
-
+#include <linux/etherdevice.h>
+#include <linux/ethtool.h>
+#include <net/ip.h>
 //-----------------------------------------------------------------------------
 // Definitions
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "1.0.50/SWI_2.6"
+#define DRIVER_VERSION "2011-07-29-1026/SWI_2.12_android"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 
@@ -124,6 +126,9 @@ static const signed char GobiNet_iface_info_gobi[] =
 
 // Allow user interrupts
 int interruptible = 1;
+
+// Number of IP packets which may be queued up for transmit
+int txQueueLength = 100;
 
 // Class should be created during module init, so needs to be global
 static struct class * gpClass;
@@ -162,7 +167,7 @@ static bool InterfaceIsWhitelisted(
 #ifdef CONFIG_PM
 /*===========================================================================
 METHOD:
-   GobiSuspend (Public Method)
+   GobiNetSuspend (Public Method)
 
 DESCRIPTION:
    Stops QMI traffic while device is suspended
@@ -175,7 +180,7 @@ RETURN VALUE:
    int - 0 for success
          negative errno for failure
 ===========================================================================*/
-int GobiSuspend(
+int GobiNetSuspend(
    struct usb_interface *     pIntf,
    pm_message_t               powerEvent )
 {
@@ -244,7 +249,7 @@ int GobiSuspend(
 
 /*===========================================================================
 METHOD:
-   GobiResume (Public Method)
+   GobiNetResume (Public Method)
 
 DESCRIPTION:
    Resume QMI traffic or recreate QMI device
@@ -256,7 +261,7 @@ RETURN VALUE:
    int - 0 for success
          negative errno for failure
 ===========================================================================*/
-int GobiResume( struct usb_interface * pIntf )
+int GobiNetResume( struct usb_interface * pIntf )
 {
    struct usbnet * pDev;
    sGobiUSBNet * pGobiDev;
@@ -461,6 +466,127 @@ static void GobiNetDriverUnbind(
    pGobiDev = NULL;
 }
 
+#ifdef DATA_MODE_RP
+/*===========================================================================
+METHOD:
+   GobiNetDriverTxFixup (Public Method)
+
+DESCRIPTION:
+   Handling data format mode on transmit path
+
+PARAMETERS
+   pDev           [ I ] - Pointer to usbnet device
+   pSKB           [ I ] - Pointer to transmit packet buffer
+   flags          [ I ] - os flags
+
+RETURN VALUE:
+   None
+===========================================================================*/
+struct sk_buff *GobiNetDriverTxFixup(
+   struct usbnet  *pDev, 
+   struct sk_buff *pSKB,
+   gfp_t flags)
+{
+   DBG( "\n" );
+
+   // Skip Ethernet header from message
+   if (skb_pull(pSKB, ETH_HLEN))
+   {
+      DBG( "For sending to device modified: ");
+      PrintHex (pSKB->data, pSKB->len);
+      return pSKB;
+   }
+   else
+   {
+      DBG( "Packet Dropped ");
+   }
+   // Filter the packet out, release it
+   dev_kfree_skb_any(pSKB);
+   return NULL;
+}
+
+/*===========================================================================
+METHOD:
+   GobiNetDriverRxFixup (Public Method)
+
+DESCRIPTION:
+   Handling data format mode on receive path
+
+PARAMETERS
+   pDev           [ I ] - Pointer to usbnet device
+   pSKB           [ I ] - Pointer to received packet buffer
+
+RETURN VALUE:
+   None
+===========================================================================*/
+static int GobiNetDriverRxFixup(
+    struct usbnet  *pDev, 
+    struct sk_buff *pSKB )
+{
+    sGobiUSBNet  *pGobiDev;
+    char *pTempbuffer; /* temp buffer for data packets */
+    struct ethhdr *pEth;
+    struct iphdr *pIp;
+
+    DBG( "\n" );
+
+    pGobiDev = (sGobiUSBNet *)pDev->data[0];
+    if (pGobiDev == NULL)
+    {
+       DBG( "failed to get Device\n" );
+       return -ENXIO;
+    }
+
+    DBG( "RX From Device: ");
+    PrintHex (pSKB->data, pSKB->len);
+
+    pTempbuffer = kmalloc(pSKB->len, GFP_ATOMIC);
+
+    /* Copy data section to a temporary buffer */
+    memcpy(pTempbuffer, pSKB->data, pSKB->len);
+
+    /* Copy data with offset equal to Ethernet header length */
+    memcpy((pSKB->data + ETH_HLEN), pTempbuffer, pSKB->len);
+    pSKB->len = pSKB->len + ETH_HLEN;
+    /* Free the internal buffer; not needed */
+    kfree(pTempbuffer);
+
+    pSKB->dev = pDev->net;
+
+    /* If the packet is IPv4 then add corresponding Ethernet header */
+    if (((*(u8 *)(pSKB->data + ETH_HLEN)) & 0xF0) == 0x40)
+    {
+        /* IPV4 packet  */
+        memcpy(pSKB->data, pGobiDev->eth_hdr_tmpl_ipv4, ETH_HLEN);
+        pSKB->protocol = cpu_to_be16(ETH_P_IP);
+        DBG( "IPv4 header added: ");
+    }
+    else  if (((*(u8 *)(pSKB->data + ETH_HLEN)) & 0xF0) == 0x60)
+    {
+        memcpy(pSKB->data, pGobiDev->eth_hdr_tmpl_ipv6, ETH_HLEN);
+        pSKB->protocol = cpu_to_be16(ETH_P_IPV6);
+        DBG( "IPv6 header added: ");
+    }
+
+    pIp = (struct iphdr *)((char *)pSKB->data + ETH_HLEN);
+    if(pIp->version == 6) 
+    {
+        pEth = (struct ethhdr *)pSKB->data;
+        pEth->h_proto = cpu_to_be16(ETH_P_IPV6);
+    }
+
+    else if(pIp->version == 4) 
+    {
+        pEth = (struct ethhdr *)pSKB->data;
+        pEth->h_proto = cpu_to_be16(ETH_P_IP);
+    }
+
+    PrintHex (pSKB->data, pSKB->len + ETH_HLEN);
+
+    return 1;
+}
+#endif
+
 #ifdef CONFIG_PM
 /*===========================================================================
 METHOD:
@@ -532,6 +658,7 @@ void GobiUSBNetTXTimeout( struct net_device * pNet )
    sURBList * pURBListEntry;
    unsigned long activeURBflags, URBListFlags;
    struct usbnet * pDev = netdev_priv( pNet );
+   struct urb * pURB;
 
    if (pDev == NULL || pDev->net == NULL)
    {
@@ -549,15 +676,17 @@ void GobiUSBNetTXTimeout( struct net_device * pNet )
 
    DBG( "\n" );
 
-   // Stop activeURB
+   // Grab a pointer to active URB
    spin_lock_irqsave( &pAutoPM->mActiveURBLock, activeURBflags );
+   pURB = pAutoPM->mpActiveURB;
+   spin_unlock_irqrestore( &pAutoPM->mActiveURBLock, activeURBflags );
 
-   if (pAutoPM->mpActiveURB != NULL)
+   // Stop active URB
+   if (pURB != NULL)
    {
-      usb_free_urb( pAutoPM->mpActiveURB );
+      usb_kill_urb( pURB );
    }
 
-   spin_unlock_irqrestore( &pAutoPM->mActiveURBLock, activeURBflags );
 
 #ifdef TX_URB_MONITOR
    if (URB_monitor)
@@ -573,6 +702,7 @@ void GobiUSBNetTXTimeout( struct net_device * pNet )
    while (pURBListEntry != NULL)
    {
       pAutoPM->mpURBList = pAutoPM->mpURBList->mpNext;
+      atomic_dec( &pAutoPM->mURBListLen );
       usb_free_urb( pURBListEntry->mpURB );
       kfree( pURBListEntry );
       pURBListEntry = pAutoPM->mpURBList;
@@ -614,6 +744,8 @@ static int GobiUSBNetAutoPMThread( void * pData )
    int status;
    struct usb_device * pUdev;
    sAutoPM * pAutoPM = (sAutoPM *)pData;
+   struct urb * pURB;
+
    if (pAutoPM == NULL)
    {
       DBG( "passed null pointer\n" );
@@ -634,13 +766,14 @@ static int GobiUSBNetAutoPMThread( void * pData )
       {
          // Stop activeURB
          spin_lock_irqsave( &pAutoPM->mActiveURBLock, activeURBflags );
-
-         if (pAutoPM->mpActiveURB != NULL)
-         {
-            usb_free_urb( pAutoPM->mpActiveURB );
-         }
-
+         pURB = pAutoPM->mpActiveURB;
          spin_unlock_irqrestore( &pAutoPM->mActiveURBLock, activeURBflags );
+
+         if (pURB != NULL)
+         {
+            usb_kill_urb( pURB );
+         }
+         // Will be freed in callback function
 
 #ifdef TX_URB_MONITOR
          if (URB_monitor)
@@ -655,6 +788,7 @@ static int GobiUSBNetAutoPMThread( void * pData )
          while (pURBListEntry != NULL)
          {
             pAutoPM->mpURBList = pAutoPM->mpURBList->mpNext;
+            atomic_dec( &pAutoPM->mURBListLen );
             usb_free_urb( pURBListEntry->mpURB );
             kfree( pURBListEntry );
             pURBListEntry = pAutoPM->mpURBList;
@@ -710,6 +844,7 @@ static int GobiUSBNetAutoPMThread( void * pData )
       // Pop an element
       pURBListEntry = pAutoPM->mpURBList;
       pAutoPM->mpURBList = pAutoPM->mpURBList->mpNext;
+      atomic_dec( &pAutoPM->mURBListLen );
       spin_unlock_irqrestore( &pAutoPM->mURBListLock, URBListFlags );
 
       // Set ActiveURB
@@ -728,13 +863,14 @@ static int GobiUSBNetAutoPMThread( void * pData )
 #if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,33 ))
             pUdev->auto_pm = 0;
 #endif
-            GobiSuspend( pAutoPM->mpIntf, PMSG_SUSPEND );
+            GobiNetSuspend( pAutoPM->mpIntf, PMSG_SUSPEND );
          }
 
          // Add pURBListEntry back onto pAutoPM->mpURBList
          spin_lock_irqsave( &pAutoPM->mURBListLock, URBListFlags );
          pURBListEntry->mpNext = pAutoPM->mpURBList;
          pAutoPM->mpURBList = pURBListEntry;
+         atomic_inc( &pAutoPM->mURBListLen );
          spin_unlock_irqrestore( &pAutoPM->mURBListLock, URBListFlags );
 
          spin_lock_irqsave( &pAutoPM->mActiveURBLock, activeURBflags );
@@ -799,6 +935,10 @@ int GobiUSBNetStartXmit(
    sURBList * pURBListEntry, ** ppURBListEnd;
    void * pURBData;
    struct usbnet * pDev = netdev_priv( pNet );
+#ifdef DATA_MODE_RP
+   struct driver_info *info = pDev->driver_info;
+#endif
+
 
    DBG( "\n" );
 
@@ -825,6 +965,25 @@ int GobiUSBNetStartXmit(
    }
 
    // Convert the sk_buff into a URB
+
+   // Check if buffer is full
+   if (atomic_read( &pAutoPM->mURBListLen ) >= txQueueLength)
+   {
+      DBG( "not scheduling request, buffer is full\n" );
+      return NETDEV_TX_BUSY;
+   }
+
+#ifdef DATA_MODE_RP
+   if (info->tx_fixup)
+   {
+      pSKB = info->tx_fixup( pDev, pSKB, GFP_ATOMIC);
+      if (pSKB == NULL)
+      {
+         DBG( "unable to tx_fixup skb\n" );
+         return NETDEV_TX_BUSY;
+      }
+   }
+#endif
 
    // Allocate URBListEntry
    pURBListEntry = kmalloc( sizeof( sURBList ), GFP_ATOMIC );
@@ -872,7 +1031,7 @@ int GobiUSBNetStartXmit(
       return NETDEV_TX_BUSY; 
  
    }
-   // Fill will SKB's data
+   // Fill with SKB's data
    memcpy( pURBData, pSKB->data, pSKB->len );
 
    usb_fill_bulk_urb( pURBListEntry->mpURB,
@@ -898,6 +1057,7 @@ int GobiUSBNetStartXmit(
       ppURBListEnd = &(*ppURBListEnd)->mpNext;
    }
    *ppURBListEnd = pURBListEntry;
+   atomic_inc( &pAutoPM->mURBListLen );
 
    spin_unlock_irqrestore( &pAutoPM->mURBListLock, URBListFlags );
 #ifdef TX_URB_MONITOR
@@ -964,6 +1124,7 @@ int GobiUSBNetOpen( struct net_device * pNet )
    pGobiDev->mAutoPM.mpActiveURB = NULL;
    spin_lock_init( &pGobiDev->mAutoPM.mURBListLock );
    spin_lock_init( &pGobiDev->mAutoPM.mActiveURBLock );
+   atomic_set( &pGobiDev->mAutoPM.mURBListLen, 0 );
    init_completion( &pGobiDev->mAutoPM.mThreadDoWork );
 
    pGobiDev->mAutoPM.mpThread = kthread_run( GobiUSBNetAutoPMThread,
@@ -1068,17 +1229,34 @@ int GobiUSBNetStop( struct net_device * pNet )
 /*=========================================================================*/
 static const struct driver_info GobiNetInfo_qmi = {
    .description   = "QmiNet Ethernet Device",
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 2,6,39 ))
+   .flags         = FLAG_ETHER | FLAG_POINTTOPOINT,
+#else
    .flags         = FLAG_ETHER,
+#endif
    .bind          = GobiNetDriverBind,
    .unbind        = GobiNetDriverUnbind,
+#ifdef DATA_MODE_RP
+   .rx_fixup      = GobiNetDriverRxFixup,
+   .tx_fixup      = GobiNetDriverTxFixup,
+#endif
    .data = (unsigned long)&GobiNet_iface_info_qmi,
 };
 
 static const struct driver_info GobiNetInfo_gobi = {
    .description   = "GobiNet Ethernet Device",
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 2,6,39 ))
+   .flags         = FLAG_ETHER | FLAG_POINTTOPOINT,
+#else
    .flags         = FLAG_ETHER,
+#endif
+
    .bind          = GobiNetDriverBind,
    .unbind        = GobiNetDriverUnbind,
+#ifdef DATA_MODE_RP
+   .rx_fixup      = GobiNetDriverRxFixup,
+   .tx_fixup      = GobiNetDriverTxFixup,
+#endif
    .data = (unsigned long)&GobiNet_iface_info_gobi,
 };
 
@@ -1146,6 +1324,7 @@ int GobiUSBNetProbe(
    int status;
    struct usbnet * pDev;
    sGobiUSBNet * pGobiDev;
+   struct ethhdr *eth;
    /* There exists a race condition in the firmware that sometimes results
     * in the absence of Ethernet framing of packets received from the device.
     * Therefore, a firmware work-around currently hard-codes the MAC address
@@ -1193,6 +1372,15 @@ int GobiUSBNetProbe(
    pDev->data[0] = (unsigned long)pGobiDev;
 
    pGobiDev->mpNetDev = pDev;
+
+#ifdef DATA_MODE_RP
+   pDev->net->flags |= IFF_NOARP;
+#endif
+
+   // Clearing endpoint halt is a magic handshake that brings 
+   // the device out of low power (airplane) mode
+   // NOTE: FCC verification should be done before this, if required
+   usb_clear_halt( pGobiDev->mpNetDev->udev, pDev->out );
 
    // Overload PM related network functions
 #if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,29 ))
@@ -1244,6 +1432,18 @@ int GobiUSBNetProbe(
    DBG( "Default Mac Address:\n" );
    PrintHex( &pGobiDev->mpNetDev->net->dev_addr[0], 6 );
 
+   /* Create ethernet header for IPv4 packets */
+   eth = (struct ethhdr *)pGobiDev->eth_hdr_tmpl_ipv4;
+   memcpy(&eth->h_dest, &pGobiDev->mpNetDev->net->dev_addr[0], ETH_HLEN);
+   memcpy(&eth->h_source, &pGobiDev->mpNetDev->net->dev_addr[0], ETH_HLEN);
+   eth->h_proto = cpu_to_be16(ETH_P_IP);
+
+   /* Create ethernet header for IPv6 packets */
+   eth = (struct ethhdr *)pGobiDev->eth_hdr_tmpl_ipv6;
+   memcpy(&eth->h_dest, &pGobiDev->mpNetDev->net->dev_addr[0], ETH_HLEN);
+   memcpy(&eth->h_source, &pGobiDev->mpNetDev->net->dev_addr[0], ETH_HLEN);
+   eth->h_proto = cpu_to_be16(ETH_P_IPV6);
+
    pGobiDev->mbQMIValid = false;
    memset( &pGobiDev->mQMIDev, 0, sizeof( sQMIDev ) );
    pGobiDev->mQMIDev.mbCdevIsInitialized = false;
@@ -1281,13 +1481,13 @@ static struct usb_driver GobiNet =
    .probe      = GobiUSBNetProbe,
    .disconnect = usbnet_disconnect,
 #ifdef CONFIG_PM
-   .suspend    = GobiSuspend,
-   .resume     = GobiResume,
+   .suspend    = GobiNetSuspend,
+   .resume     = GobiNetResume,
    .supports_autosuspend = true,
 	//frank 0630 begin
 	/*add a reset_resume to prevent kernel from hanging at message
 	 *no reset_resume for driver?*/
-   .reset_resume = GobiResume, 
+   .reset_resume = GobiNetResume, 
 #else
    .suspend    = NULL,
    .resume     = NULL,
@@ -1360,3 +1560,7 @@ MODULE_PARM_DESC( debug, "Debuging enabled or not" );
 
 module_param( interruptible, bool, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( interruptible, "Listen for and return on user interrupt" );
+module_param( txQueueLength, int, S_IRUGO | S_IWUSR );
+MODULE_PARM_DESC( txQueueLength, 
+                  "Number of IP packets which may be queued up for transmit" );
+

@@ -10,7 +10,7 @@
  */
 
 /*
- * Note:  currently there's only stubs for framebuffer_alloc and
+ * Note:  currently there's only stubsfb_blank for framebuffer_alloc and
  * framebuffer_release here.  The reson for that is that until all drivers
  * are converted to use it a sysfsification will open OOPSable races.
  */
@@ -33,7 +33,7 @@
  * for driver private data (info->par). info->par (if any) will be
  * aligned to sizeof(long).
  *
- * Returns the new structure, or NULL if an error occured.
+ * Returns the new structure, or NULL if an error occurred.
  *
  */
 struct fb_info *framebuffer_alloc(size_t size, struct device *dev)
@@ -90,11 +90,11 @@ static int activate(struct fb_info *fb_info, struct fb_var_screeninfo *var)
 	int err;
 
 	var->activate |= FB_ACTIVATE_FORCE;
-	acquire_console_sem();
+	console_lock();
 	fb_info->flags |= FBINFO_MISC_USEREVENT;
 	err = fb_set_var(fb_info, var);
 	fb_info->flags &= ~FBINFO_MISC_USEREVENT;
-	release_console_sem();
+	console_unlock();
 	if (err)
 		return err;
 	return 0;
@@ -175,7 +175,7 @@ static ssize_t store_modes(struct device *device,
 	if (i * sizeof(struct fb_videomode) != count)
 		return -EINVAL;
 
-	acquire_console_sem();
+	console_lock();
 	list_splice(&fb_info->modelist, &old_list);
 	fb_videomode_to_modelist((const struct fb_videomode *)buf, i,
 				 &fb_info->modelist);
@@ -185,7 +185,7 @@ static ssize_t store_modes(struct device *device,
 	} else
 		fb_destroy_modelist(&old_list);
 
-	release_console_sem();
+	console_unlock();
 
 	return 0;
 }
@@ -301,11 +301,11 @@ static ssize_t store_blank(struct device *device,
 	char *last = NULL;
 	int err;
 
-	acquire_console_sem();
+	console_lock();
 	fb_info->flags |= FBINFO_MISC_USEREVENT;
 	err = fb_blank(fb_info, simple_strtoul(buf, &last, 0));
 	fb_info->flags &= ~FBINFO_MISC_USEREVENT;
-	release_console_sem();
+	console_unlock();
 	if (err < 0)
 		return err;
 	return count;
@@ -364,9 +364,9 @@ static ssize_t store_pan(struct device *device,
 		return -EINVAL;
 	var.yoffset = simple_strtoul(last, &last, 0);
 
-	acquire_console_sem();
+	console_lock();
 	err = fb_pan_display(fb_info, &var);
-	release_console_sem();
+	console_unlock();
 
 	if (err < 0)
 		return err;
@@ -399,9 +399,9 @@ static ssize_t store_fbstate(struct device *device,
 
 	state = simple_strtoul(buf, &last, 0);
 
-	acquire_console_sem();
+	console_lock();
 	fb_set_suspend(fb_info, (int)state);
-	release_console_sem();
+	console_unlock();
 
 	return count;
 }
@@ -491,12 +491,11 @@ static ssize_t show_bl_curve(struct device *device,
  * fbdev to use configfs instead of sysfs */
 static struct device_attribute device_attrs[] = {
 	__ATTR(bits_per_pixel, S_IRUGO|S_IWUSR, show_bpp, store_bpp),
-	/*Carry-0525 begin*/
-  /*[HDMI] API for set HDMI state*/
+  /* carry-1201 begin */
+  /* [HDMI] unlock /sys/devices/nvhost/tegradc.1/graphics/fb1/blank */	
   //__ATTR(blank, S_IRUGO|S_IWUSR, show_blank, store_blank),
-  //__ATTR(blank, S_IRUGO|S_IWUGO, show_blank, store_blank),
-  __ATTR(blank, 0664, show_blank, store_blank),
-  /*Carry-0525 end*/
+	__ATTR(blank, S_IRUGO|S_IWUGO, show_blank, store_blank),
+  /* carry-1201 end */
 	__ATTR(console, S_IRUGO|S_IWUSR, show_console, store_console),
 	__ATTR(cursor, S_IRUGO|S_IWUSR, show_cursor, store_cursor),
 	__ATTR(mode, S_IRUGO|S_IWUSR, show_mode, store_mode),

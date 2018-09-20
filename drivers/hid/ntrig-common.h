@@ -15,6 +15,9 @@
 #ifndef _DTRIG_COMMON_H
 #define _DTRIG_COMMON_H
 
+/* Driver version */
+#define NTRIG_DRIVER_VERSION "3.5.2"
+
 /* Return codes */
 #define DTRG_NO_ERROR	 	 0
 #define DTRG_NOT_COMPLETED	 1
@@ -137,14 +140,24 @@
 
 /**********************************************************************************/
 
+#define NTRIG_DEBUG_LEVEL_NONE	0
+#define NTRIG_DEBUG_LEVEL_STD	1
+#define NTRIG_DEBUG_LEVEL_ALL	10
 extern int ntrig_debug_flag;
 void set_ntrig_debug_flag(char debug_flag);
+char get_ntrig_debug_flag_as_char(void);
 
 #define info(format, arg...) \
 	printk(KERN_INFO "%s: " format , MODULE_NAME , ## arg)
 #define ntrig_dbg(format, arg...) \
 	do { \
 		if (ntrig_debug_flag) \
+			printk(KERN_DEBUG "%s: " format, \
+			MODULE_NAME , ## arg); \
+	} while (0)
+#define ntrig_dbg_lvl(level, format, arg...) \
+	do { \
+		if (ntrig_debug_flag >= level) \
 			printk(KERN_DEBUG "%s: " format, \
 			MODULE_NAME , ## arg); \
 	} while (0)

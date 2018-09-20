@@ -35,11 +35,27 @@
 	 */
 /*----------------------------------------------------------------------------------------*
  * ---------- TOUCH_SCREEN_BORDER values should be written by the user -------------------*
+ *  These are offsets from each side of the screen(border) to reserve for virtual keys,   *
+ *  In sensor units
  *----------------------------------------------------------------------------------------*/
 	#define TOUCH_SCREEN_BORDER_DOWN	0
 	#define TOUCH_SCREEN_BORDER_UP		0
-	#define TOUCH_SCREEN_BORDER_LEFT	700
-	#define TOUCH_SCREEN_BORDER_RIGHT	0
+	#define TOUCH_SCREEN_BORDER_LEFT	0
+	#define TOUCH_SCREEN_BORDER_RIGHT	600
+
+/*----------------------------------------------------------------------------------------*
+ * ---------- TOUCH_SCREEN_BORDER_PEN values - the border values for pen------------------* 
+ * specify different values here in case the pen has different coordinate system 
+ * TODO this is a temporary hack and only for the screen border (capacitive keys are 
+ * specified in the touch coordinates above) 
+ * Basically, the pen and fingers must have the same coordinate system. 
+ * we can work around the problem while we have 2 separate input devices, but once we 
+ * have a consolidated input device it will not be possible! 
+ *----------------------------------------------------------------------------------------*/
+	#define TOUCH_SCREEN_BORDER_PEN_DOWN	0
+	#define TOUCH_SCREEN_BORDER_PEN_UP		0
+	#define TOUCH_SCREEN_BORDER_PEN_LEFT	0
+	#define TOUCH_SCREEN_BORDER_PEN_RIGHT	370
 
 	/** 
 	 * Virtual Key structure - describes the data of a single virtual key
@@ -60,7 +76,7 @@
  * --------------- VIRTUAL_KEYS_NUM values should be written by the user -----------------*
  * ------ This is the number of rows to be filled in _ntrig_virt_keys array below --------*
  *----------------------------------------------------------------------------------------*/
-	#define VIRTUAL_KEYS_NUM		4			
+	#define VIRTUAL_KEYS_NUM		3	
 
 	/** 
 	 * Virtual Keys actual data
@@ -71,10 +87,10 @@
 	struct _ntrig_virt_key  _ntrig_virt_keys[VIRTUAL_KEYS_NUM] = 
 	{
 		// scan_code	center_x	center_y	width	height
-		{	158, 	350,  		900, 		700, 	1800},		// 1st virtual key
-		{	139, 	350, 		2700, 		700, 	1800},		// 2nd virtual key
-		{	102,	350, 		4500, 		700, 	1800},		// 3rd virtual key
-		{	217, 	350, 		6300, 		700, 	1800}		// 4th virtual key
+		{	158, 	9350,  		2380, 		500, 	500},		// 1st virtual key (158=BACK)
+		{	139, 	9350, 		4880, 		500, 	500},		// 2nd virtual key (139=MENU)
+		{	102,	9350, 		3660, 		500, 	500},		// 3rd virtual key (102=HOME)
+		/* {	217, 	350, 		6300, 		700, 	1800}		// 4th virtual key (217=SEARCH) */
 	};
 
 #endif /* VIRTUAL_KEYS_SUPPORTED */

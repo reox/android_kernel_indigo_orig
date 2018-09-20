@@ -40,6 +40,10 @@
 #define SENSOR_5M_IOCTL_GET_BRIGHTNESS     _IOW('o', 11, __u16)
 #define SENSOR_5M_IOCTL_SET_OVERRIDE_TABLE _IOW('o',21, struct sensor_override_table)
 #define SENSOR_5M_IOCTL_GET_CAPTURE_FRAME_RATE _IOR('o',22, __u8)
+/* Compal Indigo-Carl ++ */
+// focus window for touch focus
+#define SENSOR_5M_IOCTL_SET_FOCUS_WINDOW   _IOW('o', 23, struct yuv5_focus_rect)
+/* Compal Indigo-Carl -- */
 
 //Sandow++ 0412 for new NV release
 enum {
@@ -130,5 +134,15 @@ struct yuv5_sensor_platform_data {
 
 };
 //#endif /* __KERNEL__ */
+
+/* Compal Indigo-Carl ++ */
+// focus window for touch focus
+struct yuv5_focus_rect {
+	int start_x;
+	int start_y;
+	int size_x;
+	int size_y;
+};
+/* Compal Indigo-Carl -- */
 
 #endif  /* __YUV5_SENSOR_H__ */

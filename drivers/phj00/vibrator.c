@@ -2,9 +2,9 @@
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
 #include <linux/gpio.h>
-#include <../arch/arm/mach-tegra/gpio-names.h>
-#include <../../drivers/staging/android/timed_output.h>
-#include <../../drivers/staging/android/timed_gpio.h>
+#include "../arch/arm/mach-tegra/gpio-names.h"
+#include "../../drivers/staging/android/timed_output.h"
+#include "../../drivers/staging/android/timed_gpio.h"
 
 
 /*

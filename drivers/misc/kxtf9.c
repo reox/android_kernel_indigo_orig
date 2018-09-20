@@ -157,7 +157,8 @@ struct kxtf9_data {
        struct early_suspend early_suspend;
 };
 
-static struct kxtf9_data *tf9 = NULL;
+struct kxtf9_data *tf9 = NULL;
+EXPORT_SYMBOL(tf9);
 static atomic_t kxtf9_dev_open_count;
 
 // Debug Flag, set to 1 to turn on debugging output
@@ -1421,6 +1422,10 @@ err2:
 err1:
 	mutex_unlock(&tf9->lock);
 	kfree(tf9);
+	/* compal-weron, set tf9 to null for PMIC driver know
+	 * G-sensor is not onboard. 
+	 */
+	tf9=NULL;
 err0:
 	return err;
 }

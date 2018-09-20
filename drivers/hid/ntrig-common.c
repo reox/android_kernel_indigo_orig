@@ -30,10 +30,10 @@ int ntrig_debug_flag = 0;
 void set_ntrig_debug_flag(char debug_flag)
 {
 	int flag;
-	if (debug_flag == '0')
-		flag = 0;
-	else if (debug_flag == '1')
-		flag = 1;
+	if ((debug_flag >= '0') && (debug_flag <= '9'))
+		flag = debug_flag - '0';
+	else if (debug_flag == 'a')
+		flag = 10;
 	else
 		return;
 	if (flag == ntrig_debug_flag)
@@ -42,6 +42,15 @@ void set_ntrig_debug_flag(char debug_flag)
 	printk(KERN_DEBUG "%s: %s debug prints\n", MODULE_NAME, (flag ? "Enabling" : "Disabling"));
 }
 
+char get_ntrig_debug_flag_as_char()
+{
+	int flag = ntrig_debug_flag;
+	if ((flag >= 0) && (flag <= 9))
+		return (flag + '0');
+	else if (flag == 10)
+		return 'a';
+	return '0';
+}
 MODULE_PARM_DESC(debug, "Debug mode enable disable");
 module_param_named	(debug, ntrig_debug_flag, bool, 0644);
 

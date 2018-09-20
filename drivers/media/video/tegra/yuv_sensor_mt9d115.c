@@ -145,12 +145,14 @@ static int sensor_set_mode(struct sensor_info *info, struct sensor_mode *mode)
 	int err;
 	u16 val;
 
-	pr_info("yuv %s: xres %u yres %u\n", __func__, mode->xres, mode->yres);
+	pr_info("[MT9D115] ___ yuv %s: xres %u yres %u ___\n", __func__, mode->xres, mode->yres);
 
 	if (mode->xres == 1600 && mode->yres == 1200)
 		sensor_table = SENSOR_MODE_1600x1200;
-	else if (mode->xres == 1280 && mode->yres == 960)   // Compal Indigo-Carl for CTS 0711
+	/* Compal Indigo-Carl : for CTS ++ */
+	else if (mode->xres == 1280 && mode->yres == 960)   // Compal Indigo-Carl for CTS 2011.07.11
 		sensor_table = SENSOR_MODE_1280x960;
+	/* Compal Indigo-Carl -- */
 	else if (mode->xres == 1280 && mode->yres == 720)
 		sensor_table = SENSOR_MODE_1280x720;
 	else if (mode->xres == 640 && mode->yres == 480)
@@ -211,6 +213,23 @@ static int sensor_set_mode(struct sensor_info *info, struct sensor_mode *mode)
 				while (val != 7);
 			}
 		}
+
+	    /* Compal Indigo-Carl ICS 2011.12.02 ++ */
+		// polling sensor to confirm it's already in preview
+		if ((val == SENSOR_640_WIDTH_VAL) && (sensor_table == SENSOR_MODE_640x480)) {
+		    val = 0;
+		    do {
+			err = sensor_write_reg(info->i2c_client, 0x098c, 0xa104);  //MCU_ADDRESS[SEQ_STATE]
+			if (err) 
+				return err;
+			err = sensor_read_reg(info->i2c_client, 0x0990, &val);     //MCU_DATA_0 value
+			if (err) 
+				return err;
+			pr_info("yuv %s: Check preview state MCU_DATA_0 = %u\n", __func__, val);
+		    }
+		    while (val != 3);
+		}
+	    /* Compal Indigo-Carl ICS 2011.12.02 -- */
 	}
 	info->mode = sensor_table;
 	return 0;
@@ -240,8 +259,8 @@ static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	}
 	case SENSOR_IOCTL_SET_COLOR_EFFECT:
 	{
-		//int coloreffect;
-		u8 coloreffect;
+		int coloreffect;
+		//u8 coloreffect;
 
 		if (copy_from_user(&coloreffect,
 			(const void __user *)arg,
@@ -280,8 +299,8 @@ static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	}
 	case SENSOR_IOCTL_SET_WHITE_BALANCE:
 	{
-		//int whitebalance;
-		u8 whitebalance;
+		int whitebalance;
+		//u8 whitebalance;
 
 		if (copy_from_user(&whitebalance,
 			(const void __user *)arg,
@@ -321,8 +340,8 @@ static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	}
 	case SENSOR_IOCTL_SET_EXPOSURE:
 	{
-		//int exposure;
-		u8 exposure;
+		int exposure;
+		//u8 exposure;
 
 		if (copy_from_user(&exposure,
 			(const void __user *)arg,

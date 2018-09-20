@@ -31,7 +31,7 @@ enum {
 	DEBUG_EXPIRE = 1U << 3,
 	DEBUG_WAKE_LOCK = 1U << 4,
 };
-static int debug_mask = DEBUG_EXIT_SUSPEND | DEBUG_WAKEUP | DEBUG_SUSPEND;
+static int debug_mask = DEBUG_EXIT_SUSPEND | DEBUG_WAKEUP | DEBUG_SUSPEND;;
 module_param_named(debug_mask, debug_mask, int, S_IRUGO | S_IWUSR | S_IWGRP);
 
 #define WAKE_LOCK_TYPE_MASK              (0x0f)
@@ -60,19 +60,15 @@ int get_expired_time(struct wake_lock *lock, ktime_t *expire_time)
 	struct timespec kt;
 	struct timespec tomono;
 	struct timespec delta;
-	unsigned long seq;
+	struct timespec sleep;
 	long timeout;
 
 	if (!(lock->flags & WAKE_LOCK_AUTO_EXPIRE))
 		return 0;
-	do {
-		seq = read_seqbegin(&xtime_lock);
-		timeout = lock->expires - jiffies;
-		if (timeout > 0)
-			return 0;
-		kt = current_kernel_time();
-		tomono = __get_wall_to_monotonic();
-	} while (read_seqretry(&xtime_lock, seq));
+	get_xtime_and_monotonic_and_sleep_offset(&kt, &tomono, &sleep);
+	timeout = lock->expires - jiffies;
+	if (timeout > 0)
+		return 0;
 	jiffies_to_timespec(-timeout, &delta);
 	set_normalized_timespec(&ts, kt.tv_sec + tomono.tv_sec - delta.tv_sec,
 				kt.tv_nsec + tomono.tv_nsec - delta.tv_nsec);

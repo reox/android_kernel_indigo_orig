@@ -35,6 +35,8 @@ message_callback	read_config_sensor	= NULL;
 message_callback_count	write_config_sensor	= NULL;
 message_callback	read_get_bus_interface	= NULL;
 message_callback	write_get_bus_interface	= NULL;
+read_counters_callback  read_get_counters	= NULL;
+reset_counters_callback write_reset_counters	= NULL;
 
 /**
  * Interface API
@@ -253,6 +255,38 @@ int get_touch_screen_border_up(void) {
 #endif
 }
 
+int get_touch_screen_border_pen_left(void) {
+#ifdef VIRTUAL_KEYS_SUPPORTED
+	return TOUCH_SCREEN_BORDER_PEN_LEFT;
+#else
+	return 0;
+#endif
+}
+
+int get_touch_screen_border_pen_right(void) {
+#ifdef VIRTUAL_KEYS_SUPPORTED
+	return TOUCH_SCREEN_BORDER_PEN_RIGHT;
+#else
+	return 0;
+#endif
+}
+
+int get_touch_screen_border_pen_down(void) {
+#ifdef VIRTUAL_KEYS_SUPPORTED
+	return TOUCH_SCREEN_BORDER_PEN_DOWN;
+#else
+	return 0;
+#endif
+}
+
+int get_touch_screen_border_pen_up(void) {
+#ifdef VIRTUAL_KEYS_SUPPORTED
+	return TOUCH_SCREEN_BORDER_PEN_UP;
+#else
+	return 0;
+#endif
+}
+
 int get_virtual_keys(char *buf) {
 #ifdef VIRTUAL_KEYS_SUPPORTED
 	char tmp_buf[1024];
@@ -296,6 +330,10 @@ static ssize_t config_dispatcher_show(struct kobject *kobj, struct kobj_attribut
 	else if (strcmp(attr->attr.name, "touch_screen_border") == 0) {
 		ntrig_dbg("ntrig-sysfs-dispathcer: inside %s , CONFIG_TOUCH_SCREEN_BORDER \n", __FUNCTION__);
 		retval = read_config_dispatcher(buf, CONFIG_TOUCH_SCREEN_BORDER);
+	}
+	else if (strcmp(attr->attr.name, "driver_version") == 0) {
+		ntrig_dbg("ntrig-sysfs-dispathcer: inside %s , CONFIG_DRIVER_VERSION \n", __FUNCTION__);
+		retval = read_config_dispatcher(buf, CONFIG_DRIVER_VERSION);
 	}
 	else if (strcmp(attr->attr.name, "debug_print") == 0) {
 		ntrig_dbg("ntrig-sysfs-dispathcer: inside %s , CONFIG_DEBUG_PRINT \n", __FUNCTION__);
@@ -369,6 +407,49 @@ static ssize_t get_bus_interface_store(struct kobject *kobj, struct kobj_attribu
     }
 }
 
+static ssize_t reset_counters_store(struct kobject *kobj, struct kobj_attribute *attr,
+			 const char *buf, size_t count)
+{
+	int ret = 1;
+	if(buf[0]=='0')
+	{
+		if(write_reset_counters != NULL)
+		{
+			write_reset_counters();
+		}
+	}
+	else
+	{
+		ntrig_dbg("Inside %s: RESET_COUNTERS - wrong data=%d, only valid data is 0\n", __FUNCTION__, *buf);
+	}
+	return ret;
+}
+
+static ssize_t get_counters_show(struct kobject *kobj, struct kobj_attribute *attr,
+			char *buf)
+{	
+	int i, res;
+	ntrig_counter *counters_list;
+	int length;
+	
+	ntrig_dbg( "inside %s\n", __FUNCTION__);
+	
+	if(read_get_counters == NULL)
+	{
+		printk(KERN_DEBUG "in %s  read_get_counters is NULL\n", __FUNCTION__);
+		return -1;
+	}
+	res = 0;
+	
+	read_get_counters(&counters_list, &length);
+	
+	for(i=0;i<length;++i)
+	{
+		res += snprintf(buf+res,PAGE_SIZE-res,"%s \t %d\n",counters_list[i].name, counters_list[i].count);
+	}
+	
+	return res;
+}
 
 static struct kobj_attribute tracklib_status_attribute =
 	//__ATTR(tracklib_status, S_IRUGO | S_IWUGO, config_dispatcher_show, config_dispatcher_store);
@@ -383,6 +464,8 @@ static struct kobj_attribute num_sensors_attribute =
 static struct kobj_attribute touch_screen_border_attribute =
 	//__ATTR(touch_screen_border, S_IRUGO | S_IWUGO, config_dispatcher_show, config_dispatcher_store); // Store function sets sensor_id for reading screen border
 	__ATTR(touch_screen_border, 0660, config_dispatcher_show, config_dispatcher_store); // Store function sets sensor_id for reading screen border
+static struct kobj_attribute driver_version_attribute =
+	__ATTR(driver_version, S_IRUGO, config_dispatcher_show, NULL);
 /* Control debug prints */
 static struct kobj_attribute debug_print_attribute =
 	//__ATTR(debug_print, S_IRUGO | S_IWUGO, config_dispatcher_show, config_dispatcher_store);
@@ -391,6 +474,13 @@ static struct kobj_attribute debug_print_attribute =
 static struct kobj_attribute bus_interface_attribute =
 	__ATTR(bus_interface, S_IRUGO | S_IWUGO, get_bus_interface_show, get_bus_interface_store); */
 
+/* create sysfs file named "driver_counters" 
+ * 'cat driver_counters' will print the counters
+ * 'echo 0 > driver_counters' will reset all counters to 0
+ */
+static struct kobj_attribute get_counters_attribute = 
+	//__ATTR(driver_counters, S_IRUGO | S_IWUGO, get_counters_show, reset_counters_store);
+	__ATTR(driver_counters, 0660, get_counters_show, reset_counters_store);
 
 /*
  * Sensor Configuration file
@@ -433,10 +523,12 @@ static struct attribute *attrs[] = {
 	&ntrig_virtual_keys_show_attribute.attr,
 	&num_sensors_attribute.attr,
 	&touch_screen_border_attribute.attr,
+	&driver_version_attribute.attr,
 	&debug_print_attribute.attr,
 	/* &bus_interface_attribute.attr, */
 	&config_sensor_attribute.attr,
 	&get_bus_interface_attribute.attr,
+	&get_counters_attribute.attr,
 	NULL,	/* need to NULL terminate the list of attributes */
 };
 
@@ -497,7 +589,10 @@ int ntrig_dispathcer_sysfs_init(void)
 	if(setup_get_bus_interface(&read_get_bus_interface, &write_get_bus_interface)){
 		ntrig_dbg("ntrig-dispatcher-sysfs inside %s cannot setup_get_bus_interface\n", __FUNCTION__);
 	}
-
+	if(setup_config_counters(&read_get_counters, &write_reset_counters)){
+		ntrig_dbg("ntrig-dispatcher-sysfs inside %s cannot setup_get_counters\n", __FUNCTION__);
+	}
+	
 	return retval;
 }
 

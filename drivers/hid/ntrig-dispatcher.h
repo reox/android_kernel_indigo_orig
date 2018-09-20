@@ -16,6 +16,11 @@
 #ifndef _NTRIG_DISPATCHER_H
 #define _NTRIG_DISPATCHER_H
 
+#include <linux/version.h>
+#define ANDROID_ICS
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 0, 0)) || defined ANDROID_ICS
+	#define MT_REPORT_TYPE_B 1
+#endif
 #include <linux/input.h>
 #include <linux/kobject.h>
 #include <linux/device.h>
@@ -81,6 +86,13 @@ typedef struct _ntrig_dev_ncp_func*	lp_ntrig_dev_ncp_func;
 struct	_ntrig_dev_hid_func;
 typedef struct _ntrig_dev_hid_func*	lp_ntrig_dev_hid_func;
 
+/* struct for counter in driver */
+typedef struct _ntrig_counter {
+	char *name;
+	unsigned int count;
+}ntrig_counter;
+
+
 typedef int 	(*message_callback)	(void * buf); 
 typedef int 	(*message_callback_count)(void * buf, size_t count);
 typedef int	(*data_send)		(void * input_device, void * buf);
@@ -88,7 +100,8 @@ typedef int	(*read_dev)		(void *dev, char *out_buf, size_t count);
 typedef int	(*write_dev)		(void *dev, const char *in_buf, short msg_len);
 typedef int	(*write_dev_hid)	(void *dev, uint8_t cmd, const char *in_buf, short msg_len);
 typedef int 	(*config_callback)	(void *buf, int req_type);
-
+typedef int     (*read_counters_callback)         (ntrig_counter **counters_list, int *length);
+typedef void    (*reset_counters_callback)        (void);
 /*
  * struct @ntrig_bus_device - defines api to exchange data between dispatcher and bus
  * don't initialize APIs directly, call @reg_bus_driver
@@ -128,6 +141,8 @@ struct	_ntrig_dev_ncp_func {
 	void*			dev;
 	read_dev 		read;
 	write_dev 		write;
+	read_counters_callback  read_counters;
+	reset_counters_callback reset_counters;
 };
 
 struct	_ntrig_dev_hid_func {
@@ -161,6 +176,8 @@ struct	_ntrig_dev_hid {
 	struct input_dev* 	single_touch_device;
 	struct input_dev* 	multi_touch_device;
 	int					is_allocated_externally;
+	read_counters_callback  read_counters;
+	reset_counters_callback reset_counters;
 };
 
 /*
@@ -173,6 +190,8 @@ struct	_ntrig_dev_raw {
 	read_dev 		read_ncp;
 	write_dev 		write_ncp;
 };
+
+
 
 /** 
  * External Interface API
@@ -221,6 +240,8 @@ int 	setup_ncp		(message_callback_count* read_from_ncp, message_callback* write_
 int 	setup_config_dispatcher	(config_callback* read_config_dispatcher, 	config_callback* write_config_dispatcher);
 int 	setup_config_sensor	(message_callback* read_config_sensor, 		message_callback_count* write_config_sensor);
 int 	setup_get_bus_interface	(message_callback* read_get_bus_interface, 	message_callback* write_get_bus_interface);
+int 	setup_config_counters	(read_counters_callback *get_counters_local, 	reset_counters_callback *reset_counters_loacl);
+
 
 /* Setup direct-event messages */
 int setup_direct_events(message_callback push_to_direct_events);

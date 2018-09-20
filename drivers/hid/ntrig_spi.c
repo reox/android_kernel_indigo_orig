@@ -33,6 +33,7 @@
 #include <linux/workqueue.h>
 #include <linux/spinlock.h>
 
+
 #include <linux/spi/ntrig_spi.h>
 
 #include "typedef-ntrig.h"
@@ -40,12 +41,18 @@
 #include "ntrig-dispatcher.h"
 #include "ntrig_low_msg.h"
 
+//#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 39)
+	#include <linux/sched.h>
+//#endif
+
 //cloud-0602start
 //for suspend/resume
 #include <linux/earlysuspend.h>
 //cloud-0602end
 
+
 #define DRIVER_NAME	"ntrig_spi"
+
 
 /** define this	macro to put driver	in "debug" mode	- it will
  *  not	be loaded at startup, and need to be loaded	by echo 6 >
@@ -72,9 +79,10 @@
  *  commands */
 #define		RAW_RECEIVE_BUFFER_INITIAL_SIZE		4096
 #define		RAW_RECEIVE_BUFFER_MAX_SIZE			1024*120
-/** maximum size of SPI buffer for send/receive: 140 bytes +
- *  8 bytes preamble and signature */
-#define MAX_SPI_TRANSFER_BUFFER_SIZE		148
+/** maximum size of SPI buffer for send/receive. The buffers
+ *  will be allocated for this size. 264 bytes for G4 (256 +
+ *  8 bytes preamble */
+#define MAX_SPI_TRANSFER_BUFFER_SIZE		264
 /** maximum size of an aggregated logical SPI message,
  *  16 (max fragments) * 122 (max message size) */
 #define MAX_LOGICAL_MESSAGE_SIZE			1952
@@ -89,6 +97,40 @@
 #define NTRIG_OE_ENABLE			135
 //cloud-0426end
 
+/** SPI message size for G3.x sensor (128 bytes + 8 bytes
+ *  preamble) */
+#define SPI_MESSAGE_SIZE_G3		136
+/** SPI message size for G4 sensor (256 bytes + 8 bytes
+ *  preamble */
+#define SPI_MESSAGE_SIZE_G4		264
+
+/** counters names **/
+/* device to host */
+#define CNTR_NAME_MULTITOUCH	"channel multitouch"
+#define CNTR_NAME_SINGLETOUCH	"channel singletouch"
+#define CNTR_NAME_PEN		"channel pen"
+#define CNTR_NAME_CONTROL_REPLY	"channel control reply"
+#define CNTR_NAME_MAINT_REPLY	"channel maint reply"
+#define CNTR_NAME_DEBUG_REPLY	"channel debug reply"
+
+/* host to device */
+#define CNTR_NAME_CONTROL	"channel control"
+#define CNTR_NAME_MAINT		"channel maint"
+#define CNTR_NAME_DEBUG		"channel debug"
+
+typedef enum _spi_cntrs_names{
+	CNTR_MULTITOUCH = 0,
+	CNTR_SINGLETOUCH,
+	CNTR_PEN,
+	CNTR_CONTROLREPLY,
+	CNTR_MAINTREPLAY,
+	CNTR_DEBUGREPLAY,
+	CNTR_CONTROL,
+	CNTR_MAINT,
+	CNTR_DEBUG,
+	CNTR_NUMBER_OF_SPI_CNTRS
+}spi_cntrs_names;
+
 /** driver private data */
 struct ntrig_spi_privdata {
 	/** pointer	back to	the	spi	device */
@@ -98,19 +140,25 @@ struct ntrig_spi_privdata {
 	/** for	debugging: sysfs file for sending test commands */
 	struct kobject *test_kobj;
 	/** gpio index for output_enable, copied from spi platform data */
-	unsigned oe_gpio;
+	int oe_gpio;
 	/** true if	output_enable line is connected	to inverter,
 	 *  copied from	spi	platform data */
 	int oe_inverted;
 	/** gpio index for the irq line */
 	unsigned irq_gpio;
+	/** flags to use for requesting interrupt handler */
+	int irq_flags;
 	/** gpio index for power */
-	unsigned pwr_gpio;
+	int pwr_gpio;
 	/** for	spi	transfer */
 	struct spi_message	msg;
 	struct spi_transfer	xfer;
 	uint8_t *tx_buf;
 	uint8_t *rx_buf;
+	/** the current configured SPI message size (136 bytes or 264
+	 *  bytes). initialized to 136 bytes but we will switch to
+	 *  264 bytes if we detect a G4 sensor */
+	int spi_msg_size;
 	/** state machine for processing incoming data from	SPI	link */
 	struct _ntrig_low_sm_info sm;
 	/** semaphore (mutex) for protecting the spi transfer/state
@@ -187,13 +235,33 @@ static struct watchdog_timer_t watchdog_timer = {
 	.kobj = NULL 
 };
 
-/** for	debugging */
-static struct spi_device *tmp_spi_dev;
-
 //cloud-0602start
 //for suspend/resume
 struct ntrig_spi_privdata* ntrig_spi_tsp;
 //cloud-0602end
+
+static ntrig_counter spi_cntrs_list[CNTR_NUMBER_OF_SPI_CNTRS] = 
+{
+	{.name = CNTR_NAME_MULTITOUCH, .count = 0},
+	{.name = CNTR_NAME_SINGLETOUCH, .count = 0},
+	{.name = CNTR_NAME_PEN, .count = 0},
+	{.name = CNTR_NAME_CONTROL_REPLY, .count = 0},
+	{.name = CNTR_NAME_MAINT_REPLY, .count = 0},
+	{.name = CNTR_NAME_DEBUG_REPLY, .count = 0},
+	{.name = CNTR_NAME_CONTROL, .count = 0},
+	{.name = CNTR_NAME_MAINT, .count = 0},
+	{.name = CNTR_NAME_DEBUG, .count = 0},
+};
+
+void spi_reset_counters(void)
+{
+	int i;
+	for(i=0; i<CNTR_NUMBER_OF_SPI_CNTRS; ++i)
+	{
+		spi_cntrs_list[i].count = 0;
+	}
+}
+
 
 static void watchdog_task_handler(struct work_struct *w);
 DECLARE_DELAYED_WORK(watchdog_task, watchdog_task_handler);
@@ -218,22 +286,17 @@ static void watchdog_task_handler(struct work_struct *w)
 				// send the "Get FW Version" command to the device
 				spi_write_hid_ncp(watchdog_timer.pdata->spi, LOWMSG_FUNCTION_GET_FW_VERSION, NULL, 0);
 				//printk(KERN_ERR "********** GetFWVersion sent to device ************\n");
-				ntrig_dbg("********** GetFWVersion sent to device ************\n");
 			}			
 			++(watchdog_timer.msg_count);
 			//printk(KERN_ERR "********** WD counter = %d ************\n", watchdog_timer.msg_count);
-			ntrig_dbg("********** WD counter = %d ************\n", watchdog_timer.msg_count);
 		}
 		else // sensor is not OK
 		{
 			//printk(KERN_ERR "********** WD counter = %d. Starting power sequence... ************\n", watchdog_timer.msg_count);
-			ntrig_dbg("********** WD counter = %d. Starting power sequence... ************\n", watchdog_timer.msg_count);
 			// send Power GPIO
 			//printk(KERN_ERR "********** Sending power off ************\n");
-			ntrig_dbg("********** Sending power off ************\n");
 			spi_set_pwr(watchdog_timer.pdata, false); // power off sensor
 			//printk(KERN_ERR "********** Sending power on ************\n");
-			ntrig_dbg("********** Sending power on ************\n");
 			spi_set_pwr(watchdog_timer.pdata, true); // power on sensor
 		}
 	}
@@ -256,6 +319,8 @@ static void watchdog_task_handler(struct work_struct *w)
 		queue_delayed_work(watchdog_timer.work_q, &watchdog_task, interval);
 	}
 }
+/** for	debugging */
+static struct spi_device *tmp_spi_dev;
 
 /** 
  * create the spi_transfer structure, that will allow us to 
@@ -293,6 +358,10 @@ static int setup_transfer(struct ntrig_spi_privdata *data)
 	/* x->len = sizeof(struct _ntrig_low_bus_msg); */
 	spi_message_add_tail(x, m);
 
+	/** initial message size - 136 bytes for G3.5 sensor. We will
+	 *  switch to 264 if detected a G4 sensor */
+	data->spi_msg_size = SPI_MESSAGE_SIZE_G3;
+
 	return 0;
 }
 
@@ -317,15 +386,17 @@ static void ntrig_spi_test_release(struct kobject *kobj);
  */
 static void spi_set_output_enable(struct ntrig_spi_privdata *pdata, bool enable)
 {
-	int val;
-
-	if(pdata->oe_inverted) {
-		val = enable ? 0 : 1;
-	} else {
-		val = enable ? 1 : 0;
+	if(pdata->oe_gpio >= 0) {
+		int val;
+	
+		if(pdata->oe_inverted) {
+			val = enable ? 0 : 1;
+		} else {
+			val = enable ? 1 : 0;
+		}
+	
+		gpio_set_value(pdata->oe_gpio, val);
 	}
-
-	gpio_set_value(pdata->oe_gpio, val);
 }
 
 /**
@@ -336,11 +407,16 @@ static void spi_set_output_enable(struct ntrig_spi_privdata *pdata, bool enable)
  */
 static bool spi_get_output_enabled(struct ntrig_spi_privdata *pdata)
 {
-	int val = gpio_get_value(pdata->oe_gpio);
-	if(pdata->oe_inverted) {
-		return val ? 0 : 1;
+	if(pdata->oe_gpio >= 0) {
+		int val = gpio_get_value(pdata->oe_gpio);
+		if(pdata->oe_inverted) {
+			return val ? 0 : 1;
+		} else {
+			return val ? 1 : 0;
+		}
 	} else {
-		return val ? 1 : 0;
+		/* no gpio available, assume as if it is always set */
+		return 1;
 	}
 }
 
@@ -401,34 +477,55 @@ static void spi_process_message(struct ntrig_spi_privdata* privdata)
 	ntrig_dbg("%s: message type %d\n", __FUNCTION__, msg->type);
 	ntrig_dbg("%s: channel=%d function=%d\n", __FUNCTION__, msg->channel, msg->function);
 	watchdog_timer.msg_count = 0; // reset the watchdog timer
+	if(msg->flags & 0x80) {
+		/* bit 7 set in flags means a 256 byte packet arrived, this is a G4 sensor.
+		   Switch our SPI message size so next transfers will be more efficient. */
+		privdata->spi_msg_size = SPI_MESSAGE_SIZE_G4;
+	}
 	switch(msg->channel) {
 	case LOWMSG_CHANNEL_MULTITOUCH:
 		if(msg->function == LOWMSG_FUNCTION_MT_REPORT) {
 			/* fill in multi-touch report and send to dispatcher */
+			u8 contactCount;
 			struct _ntrig_low_mt_report* mtr = (struct _ntrig_low_mt_report*)&msg->data[0];
+			struct _ntrig_low_mt_finger* fingers;
 			int i;
-			if(mtr->contactCount > MAX_MT_FINGERS) {
-				ntrig_dbg("%s: invalid mt report, too many fingers: %d\n", __FUNCTION__, mtr->contactCount);
-				return;
+			if(msg->flags & 0x80) {
+				/* 256 byte report always sends 10 fingers (G4) */
+				contactCount = mtr->g4fingers.contactCount;
+				fingers = &mtr->g4fingers.fingers[0];
+				if(contactCount > MAX_MT_FINGERS_G4) {
+					ntrig_dbg("%s: invalid g4 mt report, too many fingers: %d\n", __FUNCTION__, contactCount);
+					return;
+				}
+			} else {
+				/* 128 byte report, 6 fingers (G3.x) */
+				contactCount = mtr->g3fingers.contactCount;
+				fingers = &mtr->g3fingers.fingers[0];
+				if(contactCount > MAX_MT_FINGERS_G3) {
+					ntrig_dbg("%s: invalid g3 mt report, too many fingers: %d\n", __FUNCTION__, contactCount);
+					return;
+				}
 			}
-			ntrig_dbg("%s: finger count=%d vendor defined = %u\n", __FUNCTION__, mtr->contactCount, mtr->fingers[0].vendorDefined);
+			ntrig_dbg("%s: finger count=%d vendor defined = %u\n", __FUNCTION__, contactCount, fingers[0].vendorDefined);
 			mr->type = MSG_FINGER_PARSE;
 			mr->msg.fingers_event.sensor_id = privdata->sensor_id;
 			mr->msg.fingers_event.frame_index = mtr->reportCount;
-			mr->msg.fingers_event.num_of_fingers = mtr->contactCount;
-			for(i=0; i<mtr->contactCount; i++) {
-				u32 vendor = mtr->fingers[i].vendorDefined;
-				mr->msg.fingers_event.finger_array[i].x_coord = mtr->fingers[i].x;
-				mr->msg.fingers_event.finger_array[i].y_coord = mtr->fingers[i].y;
-				mr->msg.fingers_event.finger_array[i].dx = mtr->fingers[i].dx;
-				mr->msg.fingers_event.finger_array[i].dy = mtr->fingers[i].dy;
-				mr->msg.fingers_event.finger_array[i].track_id = mtr->fingers[i].fingerIndex;
+			mr->msg.fingers_event.num_of_fingers = contactCount;
+			for(i=0; i<contactCount; i++) {
+				u32 vendor = fingers[i].vendorDefined;
+				mr->msg.fingers_event.finger_array[i].x_coord = fingers[i].x;
+				mr->msg.fingers_event.finger_array[i].y_coord = fingers[i].y;
+				mr->msg.fingers_event.finger_array[i].dx = fingers[i].dx;
+				mr->msg.fingers_event.finger_array[i].dy = fingers[i].dy;
+				mr->msg.fingers_event.finger_array[i].track_id = fingers[i].fingerIndex;
 				/* vendor defined: first byte is "removed" (valid first occurance) third byte is "isPalm" */
 				mr->msg.fingers_event.finger_array[i].removed = vendor & 0xFF;
 				mr->msg.fingers_event.finger_array[i].generic = (vendor >> 8) & 0xFF;
 				mr->msg.fingers_event.finger_array[i].palm = (vendor >> 16) & 0xFF; 
 			}
-			/* call the dispatcher to deliver the message */
+			spi_cntrs_list[CNTR_MULTITOUCH].count++;
+			/* call the dispatcher to deliver the message */			
 			WriteHIDNTRIG(mr);
 		} else {
 			ntrig_dbg("%s: invalid mt report, function=%d\n", __FUNCTION__, msg->function);
@@ -448,6 +545,7 @@ static void spi_process_message(struct ntrig_spi_privdata* privdata)
 			mr->msg.pen_event.btn_removed = privdata->pen_last_btn;
 			mr->msg.pen_event.battery_status = pr->battery_status;
 			privdata->pen_last_btn = btn;
+			spi_cntrs_list[CNTR_PEN].count++;
 			/* call the dispatcher to deliver the message */
 			WriteHIDNTRIG(mr);
 		} else {
@@ -473,6 +571,7 @@ static void spi_process_message(struct ntrig_spi_privdata* privdata)
 			mr->msg.fingers_event.finger_array[0].removed = valid1st;
 			mr->msg.fingers_event.finger_array[0].generic = 1; /* emulate "blob_id" */
 			mr->msg.fingers_event.finger_array[0].palm = 0;
+			spi_cntrs_list[CNTR_SINGLETOUCH].count++;
 			/* call the dispatcher to deliver the message */ 
 			WriteHIDNTRIG(mr);
 		} else {
@@ -507,13 +606,17 @@ static void spi_process_message(struct ntrig_spi_privdata* privdata)
 		memcpy(&privdata->hid_ncp_reply_buf[0], &msg->data[0], privdata->hid_ncp_reply_size);
 		privdata->hid_ncp_got_result = 1;
 		wake_up(&privdata->hid_ncp_wait_queue);
+		spi_cntrs_list[CNTR_CONTROLREPLY].count++;
 		break;
 	case LOWMSG_CHANNEL_DEBUG_REPLY:
 	{
 		/* reply to the debug agent - extend raw fifo if not already extended.
 		 * we assume we are inside spi_lock */
 		if (kfifo_size(&privdata->raw_fifo) < RAW_RECEIVE_BUFFER_MAX_SIZE)
+		{
+			spi_cntrs_list[CNTR_DEBUGREPLAY].count++;
 			spi_expand_raw_fifo(privdata);
+		}
 	}
 	/* fall through */
 	case LOWMSG_CHANNEL_MAINT_REPLY:
@@ -533,7 +636,7 @@ static void spi_process_message(struct ntrig_spi_privdata* privdata)
 		/* handle fragmented logical messages - flags=number of fragments left */
 		if (msg->channel == LOWMSG_CHANNEL_DEBUG_REPLY)
 		{
-			u8 flags = msg->flags;
+			u8 flags = (msg->flags & ~0x80);	/* Ignore MSB, which indicates packet size */
 			if ((flags > 0) || (privdata->fragments_left > 0))	/* logical message fragment */
 			{
 				int message_error = 0;
@@ -585,6 +688,7 @@ static void spi_process_message(struct ntrig_spi_privdata* privdata)
 
 		/* wake up any threads blocked on the buffer */
 		privdata->raw_data_arrived = 1;
+		spi_cntrs_list[CNTR_MAINTREPLAY].count++;
 		wake_up(&privdata->raw_wait_queue);
 		break;
 	}
@@ -636,25 +740,31 @@ static irqreturn_t spi_irq(int irq, void *dev_id)
 		return IRQ_HANDLED;
 	}
 
-	/** repeat,	until there	is no more data */
+	/** repeat until there is no more data */
 	ntrig_dbg("%s: in spi_irq\n", __FUNCTION__);
-	if(!spi_get_output_enabled(privdata)) {
-	}
-	while(gpio_get_value(privdata->irq_gpio)) {
-		int err;
-
-		ntrig_dbg("%s: gpio line is high\n", __FUNCTION__);
+	while (1)
+	{
+		int err, sm_idle, irq_high;
 
 		/* critical section: spi transfer + state machine */
 		down(&privdata->spi_lock);
-		err = execute_spi_bus_transfer(privdata, MAX_SPI_TRANSFER_BUFFER_SIZE);
+		err = execute_spi_bus_transfer(privdata, privdata->spi_msg_size);
 		if(err) {
-			ntrig_dbg("%s: spi_transfer failure, bailing out\n", __FUNCTION__);
+			ntrig_dbg("%s: spi_transfer failure %d, bailing out\n", __FUNCTION__, err);
 			up(&privdata->spi_lock);
 			break;
 		}
 		/* critial section end */
 		up(&privdata->spi_lock);
+		
+		/* another transfer is needed if we're in the middle of a message
+		 * (state machine not idle) or the irq is high */
+		sm_idle = is_state_machine_idle(&privdata->sm);
+		irq_high = gpio_get_value(privdata->irq_gpio);
+		ntrig_dbg("%s: state machine %s idle, gpio is %s\n", __FUNCTION__,
+			(sm_idle ? "is" : "not"), (irq_high ? "high" : "low"));
+		if (sm_idle && (! irq_high))
+			break;
 	}
 
 	return IRQ_HANDLED;
@@ -709,8 +819,19 @@ static int spi_write_hid_ncp (void *dev, uint8_t cmd, const char *buf, short msg
 		 *  do it inside the spi lock so it	is done	before any reply
 		 *  arrives */
 		privdata->hid_ncp_got_result = 0;
-
-		err = execute_spi_bus_transfer(privdata, MAX_SPI_TRANSFER_BUFFER_SIZE);
+		switch(txbuf->msg.channel)
+		{
+		case LOWMSG_CHANNEL_CONTROL : 
+			spi_cntrs_list[CNTR_CONTROL].count++;
+			break;
+		case LOWMSG_CHANNEL_DEBUG : 
+			spi_cntrs_list[CNTR_DEBUG].count++;
+			break;
+		case LOWMSG_CHANNEL_MAINT :
+			spi_cntrs_list[CNTR_MAINT].count++;
+			break;
+		}
+		err = execute_spi_bus_transfer(privdata, privdata->spi_msg_size);
 		if(err) {
 			ntrig_dbg("%s: spi transfer failure %d\n", __FUNCTION__, err);
 			goto exit_err;
@@ -823,6 +944,18 @@ static int spi_write_raw (void *dev, const char *buf, short msg_len)
 	{
 		struct _ntrig_low_bus_msg* txbuf = (struct _ntrig_low_bus_msg*)(privdata->tx_buf);
 		build_ncp_dfu_cmd(request, buf, msg_len, (char*)txbuf);
+		switch(txbuf->msg.channel)
+		{
+		case LOWMSG_CHANNEL_CONTROL : 
+			spi_cntrs_list[CNTR_CONTROL].count++;
+			break;
+		case LOWMSG_CHANNEL_DEBUG : 
+			spi_cntrs_list[CNTR_DEBUG].count++;
+			break;
+		case LOWMSG_CHANNEL_MAINT :
+			spi_cntrs_list[CNTR_MAINT].count++;
+			break;
+		}
 		len = MAX_SPI_TRANSFER_BUFFER_SIZE;
 		err = execute_spi_bus_transfer(privdata, len);
 		if(err) {
@@ -942,6 +1075,19 @@ static int spi_read_raw (void *dev, char *buf, size_t count)
 	return data_len;
 }
 
+/*
+ * return the array of ntrig_counter and it's length
+ */
+
+int get_counters(ntrig_counter **counters_list_local,  int *length)
+{
+	*counters_list_local = spi_cntrs_list;
+	*length = CNTR_NUMBER_OF_SPI_CNTRS;
+	return 0;
+}
+
+
+
 /**
  * registers the device to the dispatcher driver
  */
@@ -951,7 +1097,7 @@ static int register_to_dispatcher(struct spi_device* spi)
 	lp_ntrig_bus_device nd;
 	struct _ntrig_dev_ncp_func ncp_func;
 	struct _ntrig_dev_hid_func hid_func;
-	int ret;
+	int ret, flags;
 
 	if(DTRG_NO_ERROR != allocate_device(&privdata->ntrig_dispatcher)){
 		dev_err(&spi->dev, "cannot allocate N-Trig dispatcher\n");
@@ -963,9 +1109,13 @@ static int register_to_dispatcher(struct spi_device* spi)
 	ncp_func.dev = spi;
 	ncp_func.read = spi_read_raw;
 	ncp_func.write = spi_write_raw;
+	ncp_func.read_counters = get_counters;
+	ncp_func.reset_counters = spi_reset_counters;
+	
 	hid_func.dev = spi;
 	hid_func.read = spi_read_hid_ncp;
 	hid_func.write = spi_write_hid_ncp; 
+	
 	privdata->sensor_id = RegNtrigDispatcher(TYPE_BUS_SPI_HID, "spi", &ncp_func, &hid_func); 
 	if (privdata->sensor_id == DTRG_FAILED) {
 		ntrig_dbg("%s: Cannot register device to dispatcher\n", __FUNCTION__);
@@ -993,11 +1143,15 @@ static int register_to_dispatcher(struct spi_device* spi)
 	create_multi_touch (nd, privdata->sensor_id);
 
 	/** register to	receive	interrupts when	sensor has data */
+	flags = privdata->irq_flags;
+	if(flags == 0) {
+		/* default flags */
+		flags = IRQF_ONESHOT | IRQF_TRIGGER_HIGH;
+	}
 	/* get the irq */
 	ntrig_dbg("%s: requesting irq %d\n", __FUNCTION__, spi->irq);
-	ret = request_threaded_irq(spi->irq, NULL, spi_irq,
-				   IRQF_ONESHOT | IRQF_TRIGGER_HIGH,
-				   DRIVER_NAME, privdata);
+	ret = request_threaded_irq(spi->irq, NULL, spi_irq,\
+	 	flags, DRIVER_NAME, privdata);
 	if (ret) {
 		dev_err(&spi->dev, "%s: request_irq(%d) failed\n",
 			__func__, privdata->irq_gpio);
@@ -1083,17 +1237,17 @@ const	struct attribute *ntrig_spi_watchdog_attrs = {
 };	
 
 // Our custom sysfs_ops that we will associate with our ktype later on
-static struct sysfs_ops ntrig_spi_watchdog_sysfs_ops = {
+/*static struct sysfs_ops ntrig_spi_watchdog_sysfs_ops = {
 	.show = ntrig_spi_watchdog_show,
 	.store = ntrig_spi_watchdog_store
-};
+};*/
 
 // TODO: [Oran] remove
-static struct kobj_type ntrig_spi_watchdog_ktype = {
+/*static struct kobj_type ntrig_spi_watchdog_ktype = {
 	.sysfs_ops = &ntrig_spi_watchdog_sysfs_ops,
 	.release = ntrig_spi_watchdog_release,
 	.default_attrs = &ntrig_spi_watchdog_attrs,
-};
+};*/
 
 
 //sysfs functions for the /sys/spi_watchdog/watchdog file
@@ -1236,16 +1390,16 @@ const	struct attribute *ntrig_spi_test_attrs = {
 };	
 
 /* Our custom sysfs_ops that we will associate with our ktype later on */
-static struct sysfs_ops ntrig_spi_test_sysfs_ops = {
+/*static struct sysfs_ops ntrig_spi_test_sysfs_ops = {
 	.show = ntrig_spi_test_show,
 	.store = ntrig_spi_test_store
-};
+};*/
 
-static struct kobj_type ntrig_spi_test_ktype = {
+/*static struct kobj_type ntrig_spi_test_ktype = {
 	.sysfs_ops = &ntrig_spi_test_sysfs_ops,
 	.release = ntrig_spi_test_release,
 	.default_attrs = &ntrig_spi_test_attrs,
-};
+};*/
 
 
 /** 
@@ -1370,7 +1524,7 @@ static ssize_t ntrig_spi_test_store(struct kobject *kobj, struct kobj_attribute 
 		/** same as	'3'	but	sends the command many times. Mostly for
 		 *  SPI	"alive"	tests */
 		struct _ntrig_low_bus_msg* txbuf = (struct _ntrig_low_bus_msg*)(privdata->tx_buf);
-		struct _ntrig_low_bus_msg* rxbuf = (struct _ntrig_low_bus_msg*)(privdata->rx_buf);
+		//struct _ntrig_low_bus_msg* rxbuf = (struct _ntrig_low_bus_msg*)(privdata->rx_buf);
 		int err;
 		int i;
 
@@ -1406,7 +1560,7 @@ static ssize_t ntrig_spi_test_store(struct kobject *kobj, struct kobj_attribute 
 	} else if(ch == '5') {
 		/* SPI data lines test by sending AA pattern */
 		struct _ntrig_low_bus_msg* txbuf = (struct _ntrig_low_bus_msg*)(privdata->tx_buf);
-		struct _ntrig_low_bus_msg* rxbuf = (struct _ntrig_low_bus_msg*)(privdata->rx_buf);
+		//struct _ntrig_low_bus_msg* rxbuf = (struct _ntrig_low_bus_msg*)(privdata->rx_buf);
 		int err;
 		int i;
 
@@ -1640,10 +1794,10 @@ static void ntrig_spi_test_release(struct kobject *kobj)
 static struct kobject* ntrig_create_spi_test_file(void)
 {
 	int retval;
-	int i;
+	//int i;
 	int len;
 	char* attr_name = NULL; 
-	char* tmpbuf = NULL;	
+	//char* tmpbuf = NULL;	
 	struct kobject *properties_kobj;
 
 	ntrig_dbg( "inside %s\n", __FUNCTION__);	
@@ -1713,18 +1867,12 @@ static int ntrig_spi_remove(struct spi_device *spi);
  * called when suspending the device (sleep with preserve 
  * memory) 
  */
-static int ntrig_spi_suspend(struct device* dev)
+static int ntrig_spi_suspend(struct spi_device* dev, pm_message_t mesg)
 {
-	ntrig_dbg("in %s\n", __FUNCTION__);
-	/* nothing to do for now */
-
-//cloud-0525start
-	gpio_set_value(NTRIG_OE_ENABLE, 0);
-	msleep(50);
-	gpio_set_value(NTRIG_TOUCH_ENABLE, 0);
-
-	printk("suspend: TSP suspend\n");
-//cloud-0525end
+	struct ntrig_spi_privdata* privdata = (struct ntrig_spi_privdata*)dev_get_drvdata(&dev->dev);
+	watchdog_timer.is_suspended = true;
+	ntrig_dbg("in %s\n", __FUNCTION__);	
+	spi_set_pwr(privdata, false);
 
 	return 0;
 }
@@ -1732,24 +1880,18 @@ static int ntrig_spi_suspend(struct device* dev)
 /**
  * called when resuming after sleep (suspend)
  */
-static int ntrig_spi_resume(struct device* dev)
+/*
+static int ntrig_spi_resume(struct spi_device* dev)
 {
-	struct ntrig_spi_privdata* privdata = (struct ntrig_spi_privdata*)dev_get_drvdata(dev);
-	struct spi_device* spi = privdata->spi;
-
+	struct ntrig_spi_privdata* privdata = (struct ntrig_spi_privdata*)dev_get_drvdata(&dev->dev);
+	watchdog_timer.is_suspended = false;
 	ntrig_dbg("in %s\n", __FUNCTION__);
+	//ntrig_spi_send_driver_alive(spi);
+	spi_set_pwr(privdata, true);
 
-//cloud-0525start
-	gpio_set_value(NTRIG_TOUCH_ENABLE, 1);
-	msleep(500);
-	gpio_set_value(NTRIG_OE_ENABLE, 1);
-	ntrig_spi_send_driver_alive(spi);
-
-	printk("resume: TSP resume\n");
-//cloud-0525end
 	return 0;
 }
-
+*/
 //cloud-0602start
 //early_suspend/ late_resume
 static void ntrig_spi_early_suspend(struct early_suspend *handler)
@@ -1766,22 +1908,22 @@ static void ntrig_spi_late_resume(struct early_suspend *handler)
 {
 	struct spi_device* spi = ntrig_spi_tsp->spi;
 	
-		watchdog_timer.is_suspended = false;
-
 	gpio_set_value(NTRIG_TOUCH_ENABLE, 1);
 	mdelay(500);
 	gpio_set_value(NTRIG_OE_ENABLE, 1);
 	ntrig_spi_send_driver_alive(spi);
 
+	watchdog_timer.is_suspended = false;
+
 	printk("Ntrig Touch Screen: late resume\n");
 }
 //cloud-0602end
 
-static struct dev_pm_ops spi_pm_ops = {
+/*static struct dev_pm_ops spi_pm_ops = {
 	.suspend = ntrig_spi_suspend,
 	.resume  = ntrig_spi_resume,
 	.restore = ntrig_spi_resume,
-};
+};*/
 
 //#endif
 
@@ -1790,7 +1932,7 @@ static struct spi_driver ntrig_spi_driver = {
 		.name	= DRIVER_NAME,
 		.owner	= THIS_MODULE,
 //#ifdef CONFIG_PM
-//		.pm = &spi_pm_ops,
+		//.pm = &spi_pm_ops,
 //#endif
 	},
 //cloud-0602start
@@ -1828,6 +1970,7 @@ static int __devinit ntrig_spi_probe(struct spi_device *spi)
 	pdata->oe_gpio = platdata->oe_gpio;
 	pdata->oe_inverted = platdata->oe_inverted;
 	pdata->irq_gpio = irq_to_gpio(spi->irq);
+	pdata->irq_flags = platdata->irq_flags;
 	pdata->test_kobj = ntrig_create_spi_test_file();
 	pdata->aggregation_size = 0;
 	pdata->fragments_left = 0;
@@ -1862,19 +2005,20 @@ static int __devinit ntrig_spi_probe(struct spi_device *spi)
 #ifndef NTRIG_SPI_DEBUG_MODE
 	/* set the output_enable gpio line to allow sensor to work */
 	gpio_index = pdata->oe_gpio;
-	err = gpio_request(gpio_index, "ntrig_spi_output_enable");
-	if(err) {
-		ntrig_dbg("%s: fail to request gpio for output_enable(%d), err=%d\n", __FUNCTION__, gpio_index, err);
-		/* continue anyway... */
-	}
-	low = pdata->oe_inverted ? 1 : 0;
-	high = pdata->oe_inverted ? 0 : 1;
-	err = gpio_direction_output(gpio_index, low);
-	if(err) {
-		ntrig_dbg("%s: fail to change output_enable\n", __FUNCTION__);
-		return err;
-	}
-	msleep(50);
+	if(gpio_index >= 0) {
+		err = gpio_request(gpio_index, "ntrig_spi_output_enable");
+		if(err) {
+			ntrig_dbg("%s: fail to request gpio for output_enable(%d), err=%d\n", __FUNCTION__, gpio_index, err);
+			/* continue anyway...*/ 
+		}
+		low = pdata->oe_inverted ? 1 : 0;
+		high = pdata->oe_inverted ? 0 : 1;
+		err = gpio_direction_output(gpio_index, low);
+		if(err) {
+			ntrig_dbg("%s: fail to change output_enable\n", __FUNCTION__);
+			return err;
+		}
+		msleep(50);
 
 //cloud-0426start
 //enable touch
@@ -1883,8 +2027,9 @@ static int __devinit ntrig_spi_probe(struct spi_device *spi)
 	msleep(500);
 //cloud-0426end
 
-	gpio_set_value(gpio_index, high);
-	msleep(50);
+		gpio_set_value(gpio_index, high);
+		msleep(50);
+	}
 
 	/* register the IRQ GPIO line. The actual interrupt is requested in register_to_dispatcher */
 	irq_gpio = irq_to_gpio(spi->irq);
@@ -1918,13 +2063,17 @@ static int __devinit ntrig_spi_probe(struct spi_device *spi)
 	watchdog_timer.kobj = ntrig_create_spi_watchdog_file();
 	watchdog_timer.interval = msecs_to_jiffies(SPI_WATCHDOG_INTERVAL_MSEC); // 1 sec     
 
-   if (!watchdog_timer.work_q){
+    if (!watchdog_timer.work_q)
+	{
 		watchdog_timer.work_q = create_singlethread_workqueue("watchdog");
 	}
-   if (watchdog_timer.work_q)	{		
+    if (watchdog_timer.work_q)
+	{		
 		queue_delayed_work(watchdog_timer.work_q, &watchdog_task, watchdog_timer.interval);
 	}
-
+	
+	spi_reset_counters();
+	
 	/* send DRIVER_ALIVE to put sensor*/
 	ntrig_spi_send_driver_alive(spi);
 	/* success */
@@ -1957,7 +2106,8 @@ static int ntrig_spi_remove(struct spi_device *spi)
 		ntrig_spi_test_release(pdata->test_kobj);
 	}
 
-	if (watchdog_timer.kobj){
+	if (watchdog_timer.kobj)
+	{
 		ntrig_spi_watchdog_release(watchdog_timer.kobj);
 	}
 
@@ -1976,6 +2126,7 @@ static int __init ntrig_spi_init(void)
 				ret);
 	}
 
+	
 	return ret;
 }
 module_init(ntrig_spi_init);
@@ -1986,6 +2137,7 @@ static void __exit ntrig_spi_exit(void)
 }
 module_exit(ntrig_spi_exit);
 
+MODULE_ALIAS("ntrig_spi");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("N-Trig SPI driver");
 

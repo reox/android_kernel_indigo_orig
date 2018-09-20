@@ -47,6 +47,7 @@ FUNCTIONS:
       UserspaceClose
       UserspaceRead
       UserspaceWrite
+      UserspacePoll
 
    Initializer and destructor
       RegisterQMIDevice
@@ -154,8 +155,8 @@ const bool clientmemdebug = 0;
    }
 
 #ifdef CONFIG_PM
-// Prototype to GobiSuspend function
-int GobiSuspend(
+// Prototype to GobiNetSuspend function
+int GobiNetSuspend(
    struct usb_interface *     pIntf,
    pm_message_t               powerEvent );
 #endif /* CONFIG_PM */
@@ -220,6 +221,7 @@ struct file_operations UserspaceQMIFops =
 #endif
    .open      = UserspaceOpen,
    .flush     = UserspaceClose,
+   .poll      = UserspacePoll,
 };
 
 /*=========================================================================*/
@@ -428,7 +430,8 @@ int ResubmitIntURB( struct urb * pIntURB )
    }
 
    // Interval needs reset after every URB completion
-   interval = (pIntURB->dev->speed == USB_SPEED_HIGH) ? 7 : 3;
+   interval = max((int)(pIntURB->ep->desc.bInterval),
+                  (pIntURB->dev->speed == USB_SPEED_HIGH) ? 7 : 3);
 
    // Reschedule interrupt URB
    usb_fill_int_urb( pIntURB,
@@ -557,6 +560,10 @@ void ReadCallback( struct urb * pReadURB )
             DBG( "Error allocating client data memory\n" );
             // End critical section
             spin_unlock_irqrestore( &pDev->mQMIDev.mClientMemLock, flags );
+
+            // Resubmit the interrupt URB
+            ResubmitIntURB( pDev->mQMIDev.mpIntURB );
+
             return;             
          }
 
@@ -591,6 +598,9 @@ void ReadCallback( struct urb * pReadURB )
          NotifyAndPopNotifyList( pDev,
                                  pClientMem->mClientID,
                                  transactionID );
+
+         // Possibly notify poll() that data exists
+         wake_up_interruptible( &pClientMem->mWaitQueue );
 
          // Not a broadcast
          if (clientID >> 8 != 0xff)
@@ -673,6 +683,10 @@ void IntCallback( struct urb * pIntURB )
          if (status != 0)
          {
             DBG( "Error submitting Read URB %d\n", status );
+
+            // Resubmit the interrupt urb
+            ResubmitIntURB( pIntURB );
+            return;
          }
 
          // Int URB will be resubmitted during ReadCallback
@@ -706,6 +720,7 @@ void IntCallback( struct urb * pIntURB )
       }
    }
 
+   // Resubmit the interrupt urb
    ResubmitIntURB( pIntURB );
 
    return;
@@ -751,6 +766,8 @@ int StartRead( sGobiUSBNet * pDev )
    if (pDev->mQMIDev.mpIntURB == NULL)
    {
       DBG( "Error allocating int urb\n" );
+      usb_free_urb( pDev->mQMIDev.mpReadURB );
+      pDev->mQMIDev.mpReadURB = NULL;
       return -ENOMEM;
    }
 
@@ -759,6 +776,10 @@ int StartRead( sGobiUSBNet * pDev )
    if (pDev->mQMIDev.mpReadBuffer == NULL)
    {
       DBG( "Error allocating read buffer\n" );
+      usb_free_urb( pDev->mQMIDev.mpIntURB );
+      pDev->mQMIDev.mpIntURB = NULL;
+      usb_free_urb( pDev->mQMIDev.mpReadURB );
+      pDev->mQMIDev.mpReadURB = NULL;
       return -ENOMEM;
    }
 
@@ -766,6 +787,12 @@ int StartRead( sGobiUSBNet * pDev )
    if (pDev->mQMIDev.mpIntBuffer == NULL)
    {
       DBG( "Error allocating int buffer\n" );
+      kfree( pDev->mQMIDev.mpReadBuffer );
+      pDev->mQMIDev.mpReadBuffer = NULL;
+      usb_free_urb( pDev->mQMIDev.mpIntURB );
+      pDev->mQMIDev.mpIntURB = NULL;
+      usb_free_urb( pDev->mQMIDev.mpReadURB );
+      pDev->mQMIDev.mpReadURB = NULL;
       return -ENOMEM;
    }
 
@@ -774,6 +801,14 @@ int StartRead( sGobiUSBNet * pDev )
    if (pDev->mQMIDev.mpReadSetupPacket == NULL)
    {
       DBG( "Error allocating setup packet buffer\n" );
+      kfree( pDev->mQMIDev.mpIntBuffer );
+      pDev->mQMIDev.mpIntBuffer = NULL;
+      kfree( pDev->mQMIDev.mpReadBuffer );
+      pDev->mQMIDev.mpReadBuffer = NULL;
+      usb_free_urb( pDev->mQMIDev.mpIntURB );
+      pDev->mQMIDev.mpIntURB = NULL;
+      usb_free_urb( pDev->mQMIDev.mpReadURB );
+      pDev->mQMIDev.mpReadURB = NULL;
       return -ENOMEM;
    }
 
@@ -785,13 +820,26 @@ int StartRead( sGobiUSBNet * pDev )
       cpu_to_le16(pDev->mpIntf->cur_altsetting->desc.bInterfaceNumber);  /* interface number */
    pDev->mQMIDev.mpReadSetupPacket->mLength = cpu_to_le16(DEFAULT_READ_URB_LENGTH);
 
-   interval = (pDev->mpNetDev->udev->speed == USB_SPEED_HIGH) ? 7 : 3;
    pendp = GetEndpoint(pDev->mpIntf, USB_ENDPOINT_XFER_INT, USB_DIR_IN);
    if (pendp == NULL)
    {
       DBG( "Invalid interrupt endpoint!\n" );
+      kfree(pDev->mQMIDev.mpReadSetupPacket);
+      pDev->mQMIDev.mpReadSetupPacket = NULL;
+      kfree( pDev->mQMIDev.mpIntBuffer );
+      pDev->mQMIDev.mpIntBuffer = NULL;
+      kfree( pDev->mQMIDev.mpReadBuffer );
+      pDev->mQMIDev.mpReadBuffer = NULL;
+      usb_free_urb( pDev->mQMIDev.mpIntURB );
+      pDev->mQMIDev.mpIntURB = NULL;
+      usb_free_urb( pDev->mQMIDev.mpReadURB );
+      pDev->mQMIDev.mpReadURB = NULL;
       return -ENXIO;
    }
+
+   // Interval needs reset after every URB completion
+   interval = max((int)(pendp->bInterval),
+                  (pDev->mpNetDev->udev->speed == USB_SPEED_HIGH) ? 7 : 3);
 
    // Schedule interrupt URB
    usb_fill_int_urb( pDev->mQMIDev.mpIntURB,
@@ -1224,7 +1272,7 @@ int WriteSync(
 #if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,33 ))
          pDev->mpNetDev->udev->auto_pm = 0;
 #endif
-         GobiSuspend( pDev->mpIntf, PMSG_SUSPEND );
+         GobiNetSuspend( pDev->mpIntf, PMSG_SUSPEND );
 #endif /* CONFIG_PM */
      }
       usb_free_urb( pWriteURB );
@@ -1245,7 +1293,13 @@ int WriteSync(
       return -EINVAL;
    }
 
+	//frank 1201 begin
+	/* This part eventually could call to sleep(), so add a work-around to unlock it temporarily */
+	spin_unlock_irqrestore( &pDev->mQMIDev.mClientMemLock, flags );
    result = usb_submit_urb( pWriteURB, GFP_KERNEL );
+	spin_lock_irqsave( &pDev->mQMIDev.mClientMemLock, flags );
+	//frank 1201 end
+
    if (result < 0)
    {
       DBG( "submit URB error %d\n", result );
@@ -1492,6 +1546,8 @@ int GetClientID(
    (*ppClientMem)->mpURBList = NULL;
    (*ppClientMem)->mpNext = NULL;
 
+   // Initialize workqueue for poll()
+   init_waitqueue_head( &(*ppClientMem)->mWaitQueue );
 
    // End Critical section
    spin_unlock_irqrestore( &pDev->mQMIDev.mClientMemLock, flags );
@@ -2642,6 +2698,82 @@ ssize_t UserspaceWrite(
    }
 }
 
+/*===========================================================================
+METHOD:
+   UserspacePoll (Public Method)
+
+DESCRIPTION:
+   Used to determine if read/write operations are possible without blocking
+
+PARAMETERS
+   pFilp              [ I ] - userspace file descriptor
+   pPollTable         [I/O] - Wait object to notify the kernel when data 
+                              is ready
+
+RETURN VALUE:
+   unsigned int - bitmask of what operations can be done immediately
+===========================================================================*/
+unsigned int UserspacePoll(
+   struct file *                  pFilp,
+   struct poll_table_struct *     pPollTable )
+{
+   sQMIFilpStorage * pFilpData = (sQMIFilpStorage *)pFilp->private_data;
+   sClientMemList * pClientMem;
+   unsigned long flags;
+
+   // Always ready to write
+   unsigned long status = POLLOUT | POLLWRNORM;
+
+   if (pFilpData == NULL)
+   {
+      DBG( "Bad file data\n" );
+      return POLLERR;
+   }
+
+   if (IsDeviceValid( pFilpData->mpDev ) == false)
+   {
+      DBG( "Invalid device! Updating f_ops\n" );
+      pFilp->f_op = pFilp->f_dentry->d_inode->i_fop;
+      return POLLERR;
+   }
+
+   if (pFilpData->mClientID == (u16)-1)
+   {
+      DBG( "Client ID must be set before polling 0x%04X\n",
+           pFilpData->mClientID );
+      return POLLERR;
+   }
+
+   // Critical section
+   spin_lock_irqsave( &pFilpData->mpDev->mQMIDev.mClientMemLock, flags );
+
+   // Get this client's memory location
+   pClientMem = FindClientMem( pFilpData->mpDev, 
+                               pFilpData->mClientID );
+   if (pClientMem == NULL)
+   {
+      DBG( "Could not find this client's memory 0x%04X\n",
+           pFilpData->mClientID );
+
+      spin_unlock_irqrestore( &pFilpData->mpDev->mQMIDev.mClientMemLock, 
+                              flags );
+      return POLLERR;
+   }
+   
+   poll_wait( pFilp, &pClientMem->mWaitQueue, pPollTable );
+
+   if (pClientMem->mpList != NULL)
+   {
+      status |= POLLIN | POLLRDNORM;
+   }
+
+   // End critical section
+   spin_unlock_irqrestore( &pFilpData->mpDev->mQMIDev.mClientMemLock, flags );
+
+   // Always ready to write 
+   return (status | POLLOUT | POLLWRNORM);
+}
+
 /*=========================================================================*/
 // Initializer and destructor
 /*=========================================================================*/
@@ -2735,15 +2867,15 @@ int RegisterQMIDevice( sGobiUSBNet * pDev )
       DBG( "error adding cdev\n" );
       return result;
    }
-
-   // Match interface number (usb#)
    pDevName = strstr( pDev->mpNetDev->net->name, "usb" );
+
    if (pDevName == NULL)
    {
       DBG( "Bad net name: %s\n", pDev->mpNetDev->net->name );
       return -ENXIO;
    }
    pDevName += strlen( "usb" );
+
    GobiQMIIndex = simple_strtoul( pDevName, NULL, 10 );
    if (GobiQMIIndex < 0)
    {
@@ -2803,6 +2935,7 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
    unsigned long flags;
    int count = 0;
    int tries;
+   int result;
 
    // Should never happen, but check anyway
    if (IsDeviceValid( pDev ) == false)
@@ -2879,6 +3012,22 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
       }
    }
 
+   // Send SetControlLineState request (USB_CDC)
+   result = usb_control_msg( pDev->mpNetDev->udev,
+                             usb_sndctrlpipe( pDev->mpNetDev->udev, 0 ),
+                             0x22,
+                             0x21,
+                             0, // DTR not present
+                             /* USB interface number to receive control message */
+                             pDev->mpIntf->cur_altsetting->desc.bInterfaceNumber,
+                             NULL,
+                             0,
+                             100 );
+   if (result < 0)
+   {
+      DBG( "Bad SetControlLineState status %d\n", result );
+   }
+
    // Remove device (so no more calls can be made by users)
    if (IS_ERR( pDev->mQMIDev.mpDevClass ) == false)
    {
@@ -2919,7 +3068,7 @@ METHOD:
    QMIReady (Public Method)
 
 DESCRIPTION:
-   Send QMI CTL GET VERSION INFO REQ
+   Send QMI CTL GET VERSION INFO REQ and SET DATA FORMAT REQ
    Wait for response or timeout
 
 PARAMETERS:
@@ -2974,6 +3123,7 @@ bool QMIReady(
       result = ReadAsync( pDev, QMICTL, transactionID, UpSem, &readSem );
       if (result != 0)
       {
+         kfree( pWriteBuffer );
          return false;
       }
 
@@ -3042,6 +3192,95 @@ bool QMIReady(
    {
       return false;
    }
+
+   // Send SET DATA FORMAT REQ
+   writeBufferSize = QMICTLSetDataFormatReqSize();
+
+   pWriteBuffer = kmalloc( writeBufferSize, GFP_KERNEL );
+   if (pWriteBuffer == NULL)
+   {
+      return false;
+   }
+
+   // Start read
+   sema_init( &readSem, 0 );
+
+   transactionID = atomic_add_return( 1, &pDev->mQMIDev.mQMICTLTransactionID );
+   DBG( "QMI Set Data Format TransactionID %x \n", transactionID);
+
+   if (transactionID == 0)
+   {
+      transactionID = atomic_add_return( 1, &pDev->mQMIDev.mQMICTLTransactionID );
+   }
+   result = ReadAsync( pDev, QMICTL, transactionID, UpSem, &readSem );
+   if (result != 0)
+   {
+      return false;
+   }
+
+   // Fill buffer
+   result = QMICTLSetDataFormatReq( pWriteBuffer,
+                            writeBufferSize,
+                            transactionID );
+
+   if (result < 0)
+   {
+      kfree( pWriteBuffer );
+      return false;
+   }
+
+   DBG("Sending Data Format Request\n");
+
+   WriteSync( pDev,
+              pWriteBuffer,
+              writeBufferSize,
+              QMICTL );
+
+   msleep( 100 );
+   if (down_trylock( &readSem ) == 0)
+   {
+      // Enter critical section
+      spin_lock_irqsave( &pDev->mQMIDev.mClientMemLock, flags );
+
+      // Pop the read data
+      if (PopFromReadMemList( pDev,
+                              QMICTL,
+                              transactionID,
+                              &pReadBuffer,
+                              &readBufferSize ) == true)
+      {
+         // Success
+         PrintHex(pReadBuffer, readBufferSize);
+
+         // End critical section
+         spin_unlock_irqrestore( &pDev->mQMIDev.mClientMemLock, flags );
+
+         // We care about the result: call Response  function
+         result = QMICTLSetDataFormatResp( pReadBuffer, readBufferSize);
+
+         kfree( pReadBuffer );
+
+         if (result != 0)
+         {
+            DBG( "Device cannot set requested data format\n" );
+            kfree( pWriteBuffer );
+            return false;
+         }
+      }
+   }
+   else
+   {
+      // Enter critical section
+      spin_lock_irqsave( &pDev->mQMIDev.mClientMemLock, flags );
+
+      // Timeout, remove the async read
+      NotifyAndPopNotifyList( pDev, QMICTL, transactionID );
+
+      // End critical section
+      spin_unlock_irqrestore( &pDev->mQMIDev.mClientMemLock, flags );
+   }
+
+   kfree( pWriteBuffer );
 
    DBG( "QMI Ready after %u milliseconds\n", curTime );
 
@@ -3141,44 +3380,44 @@ void QMIWDSCallback(
    {
 
       // Fill in new values, ignore max values
-      if (TXOfl != le32_to_cpu((u32)-1))
+      if (TXOfl != (u32)-1)
       {
-         pStats->tx_fifo_errors = le32_to_cpu(TXOfl);
+         pStats->tx_fifo_errors = TXOfl;
       }
 
       if (RXOfl != (u32)-1)
       {
-         pStats->rx_fifo_errors = le32_to_cpu(RXOfl);
+         pStats->rx_fifo_errors = RXOfl;
       }
 
       if (TXErr != (u32)-1)
       {
-         pStats->tx_errors = le32_to_cpu(TXErr);
+         pStats->tx_errors = TXErr;
       }
 
       if (RXErr != (u32)-1)
       {
-         pStats->rx_errors = le32_to_cpu(RXErr);
+         pStats->rx_errors = RXErr;
       }
 
       if (TXOk != (u32)-1)
       {
-         pStats->tx_packets = le32_to_cpu(TXOk) + pStats->tx_errors;
+         pStats->tx_packets = TXOk + pStats->tx_errors;
       }
 
       if (RXOk != (u32)-1)
       {
-         pStats->rx_packets = le32_to_cpu(RXOk) + pStats->rx_errors;
+         pStats->rx_packets = RXOk + pStats->rx_errors;
       }
 
       if (TXBytesOk != (u64)-1)
       {
-         pStats->tx_bytes = le64_to_cpu(TXBytesOk);
+         pStats->tx_bytes = TXBytesOk;
       }
 
       if (RXBytesOk != (u64)-1)
       {
-         pStats->rx_bytes = le64_to_cpu(RXBytesOk);
+         pStats->rx_bytes = RXBytesOk;
       }
 
       if (bReconfigure == true)

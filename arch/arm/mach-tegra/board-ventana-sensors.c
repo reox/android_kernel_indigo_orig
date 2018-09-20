@@ -40,52 +40,41 @@
 #include <linux/nct1008.h>
 #include <linux/err.h>
 #include <linux/regulator/consumer.h>
-
-#include <mach/gpio.h>
-//Eric  0505 begin
+//Eric  0825 begin
 #include <linux/kxtf9.h>
 //Eric	 end
+#include <mach/gpio.h>
 /* Compal Indigo-Carl begin */
 //#include <media/ov5650.h>
 //#include <media/ov2710.h>
+//#include <media/sh532u.h>
 //#include <media/ssl3250a.h>
-#ifdef CONFIG_VIDEO_MT9D115
 #include <media/yuv_sensor_mt9d115.h>
-#endif
-#ifdef CONFIG_VIDEO_MT9P111
 #include <media/yuv_sensor_mt9p111.h>
-#endif
 /* Compal Indigo-Carl end */
 #include <generated/mach-types.h>
 
 #include "gpio-names.h"
 #include "board.h"
 #include "board-ventana.h"
+#include "cpu-tegra.h"
 
 #define ISL29018_IRQ_GPIO	TEGRA_GPIO_PZ2
 #define AKM8975_IRQ_GPIO	TEGRA_GPIO_PN5
 #define CAMERA_POWER_GPIO	TEGRA_GPIO_PV4
+
+/* Compal Indigo-Carl begin */
 //#define CAMERA_CSI_MUX_SEL_GPIO	TEGRA_GPIO_PBB4
 //#define CAMERA_FLASH_ACT_GPIO	TEGRA_GPIO_PD2
-//#define CAMERA_FLASH_STRB_GPIO	TEGRA_GPIO_PA0
-#define AC_PRESENT_GPIO		TEGRA_GPIO_PV3
-#define NCT1008_THERM2_GPIO	TEGRA_GPIO_PN6
-//#define CAMERA_FLASH_OP_MODE		0 /*0=I2C mode, 1=GPIO mode*/
-//#define CAMERA_FLASH_MAX_LED_AMP	7
-//#define CAMERA_FLASH_MAX_TORCH_AMP	11
-//#define CAMERA_FLASH_MAX_FLASH_AMP	31
-/* Compal Indigo-Carl begin */
-#ifdef CONFIG_VIDEO_MT9D115
-#define YUV_SENSOR_OE_L_GPIO    TEGRA_GPIO_PBB5
+#define YUV_SENSOR_OE_GPIO      TEGRA_GPIO_PBB5
 #define YUV_SENSOR_RST_GPIO     TEGRA_GPIO_PD2
-#endif
-#ifdef CONFIG_VIDEO_MT9P111
 #define YUV5_PWR_DN_GPIO        TEGRA_GPIO_PBB4
-#define YUV5_RST_L_GPIO         TEGRA_GPIO_PA0
-#endif
+#define YUV5_RST_GPIO           TEGRA_GPIO_PA0
 /* Compal Indigo-Carl end */
 
-/* Compal Carl begin */
+#define NCT1008_THERM2_GPIO	TEGRA_GPIO_PN6
+
+/* Compal Indigo-Carl begin */
 struct camera_gpios {
 	const char *name;
 	int gpio;
@@ -100,14 +89,13 @@ struct camera_gpios {
 		.enabled = _enabled,			                        \
 		.milliseconds = _milliseconds,				        \
 	}
-/* Compal Carl end */
+/* Compal Indigo-Carl end */
 
-extern void tegra_throttling_enable(bool enable);
-
-/* Compal Indigo-Carl begin */
-#if 0
+#if 0  // Compal Indigo-Carl ++
 static int ventana_camera_init(void)
 {
+	int err;
+
 	tegra_gpio_enable(CAMERA_POWER_GPIO);
 	gpio_request(CAMERA_POWER_GPIO, "camera_power_en");
 	gpio_direction_output(CAMERA_POWER_GPIO, 1);
@@ -118,11 +106,20 @@ static int ventana_camera_init(void)
 	gpio_direction_output(CAMERA_CSI_MUX_SEL_GPIO, 0);
 	gpio_export(CAMERA_CSI_MUX_SEL_GPIO, false);
 
+	err = gpio_request(CAMERA_FLASH_ACT_GPIO, "torch_gpio_act");
+	if (err < 0) {
+		pr_err("gpio_request failed for gpio %d\n",
+					CAMERA_FLASH_ACT_GPIO);
+	} else {
+		tegra_gpio_enable(CAMERA_FLASH_ACT_GPIO);
+		gpio_direction_output(CAMERA_FLASH_ACT_GPIO, 0);
+		gpio_export(CAMERA_FLASH_ACT_GPIO, false);
+	}
 	return 0;
 }
-#endif
+#endif  // Compal Indigo-Carl --
 
-#if 0
+#if 0  // Compal Indigo-Carl ++
 /* left ov5650 is CAM2 which is on csi_a */
 static int ventana_left_ov5650_power_on(void)
 {
@@ -211,22 +208,22 @@ struct ov2710_platform_data ventana_ov2710_data = {
 	.power_on = ventana_ov2710_power_on,
 	.power_off = ventana_ov2710_power_off,
 };
-#endif
-/* Compal Indigo-Carl end */
+#endif  // Compal Indigo-Carl --
 
-/* Compal Carl begin */
-#ifdef CONFIG_VIDEO_MT9D115
+/* Compal Indigo-Carl begin */
+// MT9D115 (2M camera)
 static struct camera_gpios yuv_sensor_gpio_keys[] = {
 	[0] = CAMERA_GPIO("cam_power_en", CAMERA_POWER_GPIO, 1, 0),
-	[1] = CAMERA_GPIO("yuv_sensor_oe_l", YUV_SENSOR_OE_L_GPIO, 0, 0),
-	[2] = CAMERA_GPIO("yuv_sensor_rst_lo", YUV_SENSOR_RST_GPIO, 1, 0),
+	[1] = CAMERA_GPIO("yuv_sensor_oe", YUV_SENSOR_OE_GPIO, 0, 0),
+	[2] = CAMERA_GPIO("yuv_sensor_rst", YUV_SENSOR_RST_GPIO, 1, 0),
 };
 
 static int yuv_sensor_power_on(void)
 {
 	int i, ret;
 
-	pr_info("yuv %s\n",__func__);
+	pr_info("[ MT9D115 ] _____  %s  _____\n", __func__);  // Carl test
+
 	for (i = 0; i < ARRAY_SIZE(yuv_sensor_gpio_keys); i++) {
 		tegra_gpio_enable(yuv_sensor_gpio_keys[i].gpio);
 		ret = gpio_request(yuv_sensor_gpio_keys[i].gpio,
@@ -238,7 +235,7 @@ static int yuv_sensor_power_on(void)
 		}
 	}
 
-	gpio_direction_output(YUV_SENSOR_OE_L_GPIO, 0);
+	gpio_direction_output(YUV_SENSOR_OE_GPIO, 0);
 	gpio_direction_output(YUV_SENSOR_RST_GPIO, 1);
 	msleep(1);
 	gpio_direction_output(CAMERA_POWER_GPIO, 1);
@@ -262,10 +259,10 @@ fail:
 static int yuv_sensor_power_off(void)
 {
         int i;
-	pr_info("yuv %s\n",__func__);
-	gpio_direction_output(YUV_SENSOR_OE_L_GPIO, 1);
+	pr_info("[ MT9D115 ] _____  %s  _____\n", __func__);  // Carl test
+	gpio_direction_output(YUV_SENSOR_OE_GPIO, 1);
 	gpio_direction_output(CAMERA_POWER_GPIO, 0);
-	gpio_direction_output(YUV_SENSOR_OE_L_GPIO, 0);
+	gpio_direction_output(YUV_SENSOR_OE_GPIO, 0);
 	gpio_direction_output(YUV_SENSOR_RST_GPIO, 0);
 
 	i = ARRAY_SIZE(yuv_sensor_gpio_keys);
@@ -278,20 +275,20 @@ struct yuv_sensor_platform_data yuv_sensor_data = {
 	.power_on = yuv_sensor_power_on,
 	.power_off = yuv_sensor_power_off,
 };
-#endif // MT9D115
 
-#ifdef CONFIG_VIDEO_MT9P111
+// MT9P111 (5M camera)
 static struct camera_gpios yuv5_sensor_gpio_keys[] = {
 	[0] = CAMERA_GPIO("cam_power_en", CAMERA_POWER_GPIO, 1, 0),
 	[1] = CAMERA_GPIO("yuv5_sensor_pwdn", YUV5_PWR_DN_GPIO, 0, 0),
-	[2] = CAMERA_GPIO("yuv5_sensor_rst_lo", YUV5_RST_L_GPIO, 1, 0),
+	[2] = CAMERA_GPIO("yuv5_sensor_rst", YUV5_RST_GPIO, 1, 0),
 };
 
 static int yuv5_sensor_power_on(void)
 {
 	int i, ret;
 
-	pr_info("yuv5 %s\n",__func__);
+	pr_info("[ MT9P111 ] _____  %s  _____\n", __func__);  // Carl test
+
 	for (i = 0; i < ARRAY_SIZE(yuv5_sensor_gpio_keys); i++) {
 		tegra_gpio_enable(yuv5_sensor_gpio_keys[i].gpio);
 		ret = gpio_request(yuv5_sensor_gpio_keys[i].gpio,
@@ -304,13 +301,13 @@ static int yuv5_sensor_power_on(void)
 	}
 
 	gpio_direction_output(YUV5_PWR_DN_GPIO, 0);
-	gpio_direction_output(YUV5_RST_L_GPIO, 0);
+	gpio_direction_output(YUV5_RST_GPIO, 0);
 	msleep(1);
 	gpio_direction_output(CAMERA_POWER_GPIO, 1);
 	msleep(1);
-	gpio_direction_output(YUV5_RST_L_GPIO, 1);
+	gpio_direction_output(YUV5_RST_GPIO, 1);
 	msleep(1);
-	
+
 	for (i = 0; i < ARRAY_SIZE(yuv5_sensor_gpio_keys); i++) {
 		gpio_export(yuv5_sensor_gpio_keys[i].gpio, false);
 	}
@@ -326,9 +323,10 @@ fail:
 static int yuv5_sensor_power_off(void)
 {
 	int i;
-	pr_info("yuv5 %s\n",__func__);
-	gpio_direction_output(YUV5_RST_L_GPIO, 0);
-	msleep(1);
+	pr_info("[ MT9P111 ] _____  %s  _____\n", __func__);  // Carl test
+	gpio_direction_output(YUV5_RST_GPIO, 0);
+	//msleep(1);
+	udelay(500);   // Compal 0729
 	gpio_direction_output(YUV5_PWR_DN_GPIO, 1);
 	gpio_direction_output(CAMERA_POWER_GPIO, 0);
 	gpio_direction_output(YUV5_PWR_DN_GPIO, 0);
@@ -343,13 +341,13 @@ struct yuv5_sensor_platform_data yuv5_sensor_data = {
 	.power_on = yuv5_sensor_power_on,
 	.power_off = yuv5_sensor_power_off,
 };
-#endif // MT9P111
 
 static int ventana_camera_init(void)
 {
 	int i, ret;
 
-#ifdef CONFIG_VIDEO_MT9D115
+	pr_info("[ Camera ] _____  %s  _____\n", __func__);  // Carl test
+
 	// initialize MT9D115
 	for (i = 0; i < ARRAY_SIZE(yuv_sensor_gpio_keys); i++) {
 		tegra_gpio_enable(yuv_sensor_gpio_keys[i].gpio);
@@ -363,16 +361,14 @@ static int ventana_camera_init(void)
 	}
 
 	gpio_direction_output(CAMERA_POWER_GPIO, 0);
-	gpio_direction_output(YUV_SENSOR_OE_L_GPIO, 0);
+	gpio_direction_output(YUV_SENSOR_OE_GPIO, 0);
 	gpio_direction_output(YUV_SENSOR_RST_GPIO, 0);
 
 	for (i = 0; i < ARRAY_SIZE(yuv_sensor_gpio_keys); i++) {
 		gpio_free(yuv_sensor_gpio_keys[i].gpio);
 		gpio_export(yuv_sensor_gpio_keys[i].gpio, false);
 	}
-#endif
 
-#ifdef CONFIG_VIDEO_MT9P111
 	// initialize MT9P111
 	for (i = 0; i < ARRAY_SIZE(yuv5_sensor_gpio_keys); i++) {
 		tegra_gpio_enable(yuv5_sensor_gpio_keys[i].gpio);
@@ -387,86 +383,58 @@ static int ventana_camera_init(void)
 
 	gpio_direction_output(CAMERA_POWER_GPIO, 0);
 	gpio_direction_output(YUV5_PWR_DN_GPIO, 0);
-	gpio_direction_output(YUV5_RST_L_GPIO, 0);
+	gpio_direction_output(YUV5_RST_GPIO, 0);
 
 	for (i = 0; i < ARRAY_SIZE(yuv5_sensor_gpio_keys); i++) {
 		gpio_free(yuv5_sensor_gpio_keys[i].gpio);
 		gpio_export(yuv5_sensor_gpio_keys[i].gpio, false);
 	}
-#endif
 
 	return 0;
 
-#ifdef CONFIG_VIDEO_MT9D115
 fail2:
         while (i--)
                 gpio_free(yuv_sensor_gpio_keys[i].gpio);
 	return ret;
-#endif
 
-#ifdef CONFIG_VIDEO_MT9P111
 fail3:
 	while (i--)
 		gpio_free(yuv5_sensor_gpio_keys[i].gpio);
 	return ret;
-#endif
 }
 /* Compal Indigo-Carl end */
 
-#if 0
-static int ventana_ssl3250a_init(void)
-{
-	gpio_request(CAMERA_FLASH_ACT_GPIO, "torch_gpio_act");
-	gpio_direction_output(CAMERA_FLASH_ACT_GPIO, 0);
-	tegra_gpio_enable(CAMERA_FLASH_ACT_GPIO);
-	gpio_request(CAMERA_FLASH_STRB_GPIO, "torch_gpio_strb");
-	gpio_direction_output(CAMERA_FLASH_STRB_GPIO, 0);
-	tegra_gpio_enable(CAMERA_FLASH_STRB_GPIO);
-	gpio_export(CAMERA_FLASH_STRB_GPIO, false);
-	return 0;
-}
-
-static void ventana_ssl3250a_exit(void)
-{
-	gpio_set_value(CAMERA_FLASH_STRB_GPIO, 0);
-	gpio_free(CAMERA_FLASH_STRB_GPIO);
-	tegra_gpio_disable(CAMERA_FLASH_STRB_GPIO);
-	gpio_set_value(CAMERA_FLASH_ACT_GPIO, 0);
-	gpio_free(CAMERA_FLASH_ACT_GPIO);
-	tegra_gpio_disable(CAMERA_FLASH_ACT_GPIO);
-}
-
-static int ventana_ssl3250a_gpio_strb(int val)
-{
-	int prev_val;
-	prev_val = gpio_get_value(CAMERA_FLASH_STRB_GPIO);
-	gpio_set_value(CAMERA_FLASH_STRB_GPIO, val);
-	return prev_val;
+#if 0  // Compal Indigo-Carl ++
+static struct sh532u_platform_data sh532u_left_pdata = {
+	.num		= 1,
+	.sync		= 2,
+	.dev_name	= "focuser",
+	.gpio_reset	= CAM2_RST_L_GPIO,
+	.gpio_en	= CAM2_LDO_SHUTDN_L_GPIO,
 };
 
-static int ventana_ssl3250a_gpio_act(int val)
-{
-	int prev_val;
-	prev_val = gpio_get_value(CAMERA_FLASH_ACT_GPIO);
-	gpio_set_value(CAMERA_FLASH_ACT_GPIO, val);
-	return prev_val;
+static struct sh532u_platform_data sh532u_right_pdata = {
+	.num		= 2,
+	.sync		= 1,
+	.dev_name	= "focuser",
+	.gpio_reset	= CAM1_RST_L_GPIO,
+	.gpio_en	= CAM1_LDO_SHUTDN_L_GPIO,
 };
 
-static struct ssl3250a_platform_data ventana_ssl3250a_data = {
-	.config		= CAMERA_FLASH_OP_MODE,
-	.max_amp_indic	= CAMERA_FLASH_MAX_LED_AMP,
-	.max_amp_torch	= CAMERA_FLASH_MAX_TORCH_AMP,
-	.max_amp_flash	= CAMERA_FLASH_MAX_FLASH_AMP,
-	.init		= ventana_ssl3250a_init,
-	.exit		= ventana_ssl3250a_exit,
-	.gpio_act	= ventana_ssl3250a_gpio_act,
-	.gpio_en1	= NULL,
-	.gpio_en2	= NULL,
-	.gpio_strb	= ventana_ssl3250a_gpio_strb,
-};
-#endif
 
-//Eric-0425 begin
+static struct nvc_torch_pin_state ventana_ssl3250a_pinstate = {
+	.mask		= 0x0040, /* VGP6 */
+	.values		= 0x0040,
+};
+
+static struct ssl3250a_platform_data ventana_ssl3250a_pdata = {
+	.dev_name	= "torch",
+	.pinstate	= &ventana_ssl3250a_pinstate,
+	.gpio_act	= CAMERA_FLASH_ACT_GPIO,
+};
+#endif  // Compal Indigo-Carl --
+
+//Eric-0825 begin
 //add light sensor driver
 static void ventana_al3000a_ls_init(void)
 {
@@ -488,14 +456,7 @@ static void ventana_kxtf9_init(void)
 	gpio_request(TEGRA_GPIO_PN4, "kxtf9");
 	gpio_direction_input(TEGRA_GPIO_PN4);
 }
-//Eric-0425 end
-
-/*static void ventana_bq20z75_init(void)
-{
-	tegra_gpio_enable(AC_PRESENT_GPIO);
-	gpio_request(AC_PRESENT_GPIO, "ac_present");
-	gpio_direction_input(AC_PRESENT_GPIO);
-}*/
+//Eric-0825 end
 
 static void ventana_ECBat_init(void)
 {
@@ -521,32 +482,25 @@ static struct nct1008_platform_data ventana_nct1008_pdata = {
 	.conv_rate = 0x08,
 	.offset = 0,
 	.hysteresis = 0,
-	.shutdown_ext_limit = 105,
-	.shutdown_local_limit = 115,
+	.shutdown_ext_limit = 115,
+	.shutdown_local_limit = 120,
 	.throttling_ext_limit = 90,
 	.alarm_fn = tegra_throttling_enable,
 };
 
 static const struct i2c_board_info ventana_i2c0_board_info[] = {
-#if 0
-	{
-		I2C_BOARD_INFO("isl29018", 0x44),
-		.irq = TEGRA_GPIO_TO_IRQ(TEGRA_GPIO_PZ2),
-	},
-#else
-//Eric-0425 begin
+//Eric-0825 begin
 //add light sensor driver
 	{
 		I2C_BOARD_INFO("al3000a_ls", 0x1C),
 		.irq = TEGRA_GPIO_TO_IRQ(TEGRA_GPIO_PZ2),
 	},
-//Eric-0425 end
-#endif
+//Eric-0825 end
 };
+
 /*static const struct i2c_board_info ventana_i2c2_board_info[] = {
 	{
-		I2C_BOARD_INFO("bq20z75-battery", 0x0B),
-		.irq = TEGRA_GPIO_TO_IRQ(AC_PRESENT_GPIO),
+		I2C_BOARD_INFO("bq20z75", 0x0B),
 	},
 };*/
 
@@ -557,7 +511,7 @@ static const struct i2c_board_info ventana_i2c2_board_info[] = {
 	},
 };
 
-#if 0  // Compal Indigo-Carl
+#if 0  // Compal Indigo-Carl ++
 static struct pca953x_platform_data ventana_tca6416_data = {
 	.gpio_base      = TEGRA_NR_GPIOS + 4, /* 4 gpios are already requested by tps6586x */
 };
@@ -590,12 +544,12 @@ static const struct i2c_board_info ventana_i2c3_board_info_pca9546[] = {
 static const struct i2c_board_info ventana_i2c3_board_info_ssl3250a[] = {
 	{
 		I2C_BOARD_INFO("ssl3250a", 0x30),
-		.platform_data = &ventana_ssl3250a_data,
+		.platform_data = &ventana_ssl3250a_pdata,
 	},
 };
-#endif  // Compal Indigo-Carl
+#endif  // Compal Indigo-Carl --
 
-///Eric 0505 begin
+///Eric 0825 begin
 struct kxtf9_platform_data kxtf9_pdata = {
 
                 .min_interval           = 1,
@@ -624,7 +578,7 @@ struct kxtf9_platform_data kxtf9_pdata = {
                 .tdt_window_timer_init  = 0xA0,
                 .gpio = TEGRA_GPIO_PN4, // Replace with appropriate GPIO pin number 
 };
-///Eric end
+///Eric 0825 end
 
 static struct i2c_board_info ventana_i2c4_board_info[] = {
 	{
@@ -632,8 +586,8 @@ static struct i2c_board_info ventana_i2c4_board_info[] = {
 		.irq = TEGRA_GPIO_TO_IRQ(NCT1008_THERM2_GPIO),
 		.platform_data = &ventana_nct1008_pdata,
 	},
-
-//#ifdef CONFIG_SENSORS_AK8975
+///Eric 0825 begin
+///add compass g-sensor driver
 	{
 		I2C_BOARD_INFO("akm8975", 0x0C),
 		.irq = TEGRA_GPIO_TO_IRQ(AKM8975_IRQ_GPIO),
@@ -642,7 +596,6 @@ static struct i2c_board_info ventana_i2c4_board_info[] = {
 		I2C_BOARD_INFO("kxtf9", 0x0F),
               .platform_data = &kxtf9_pdata,
         },
-//#endif
 };
 
 /* Compal Indigo-Carl begin */
@@ -662,12 +615,17 @@ static struct i2c_board_info ventana_i2c3_board_info[] = {
 	},
 #endif
 };
+/* Compal Indigo-Carl end */
 
-#if 0
+#if 0  // Compal Indigo-Carl ++
 static struct i2c_board_info ventana_i2c6_board_info[] = {
 	{
 		I2C_BOARD_INFO("ov5650R", 0x36),
 		.platform_data = &ventana_right_ov5650_data,
+	},
+	{
+		I2C_BOARD_INFO("sh532u", 0x72),
+		.platform_data = &sh532u_right_pdata,
 	},
 };
 
@@ -678,6 +636,7 @@ static struct i2c_board_info ventana_i2c7_board_info[] = {
 	},
 	{
 		I2C_BOARD_INFO("sh532u", 0x72),
+		.platform_data = &sh532u_left_pdata,
 	},
 };
 
@@ -687,55 +646,99 @@ static struct i2c_board_info ventana_i2c8_board_info[] = {
 		.platform_data = &ventana_ov2710_data,
 	},
 };
-#endif
-/* Compal Indigo-Carl end */
+#endif  // Compal Indigo-Carl --
 
 #ifdef CONFIG_MPU_SENSORS_MPU3050
-#define SENSOR_MPU_NAME "mpu3050"
-static struct mpu3050_platform_data mpu3050_data = {
-	.int_config  = 0x10,
-	.orientation = { 0, -1, 0, -1, 0, 0, 0, 0, -1 },  /* Orientation matrix for MPU on ventana */
-	.level_shifter = 0,
-	.accel = {
-#ifdef CONFIG_MPU_SENSORS_KXTF9
-	.get_slave_descr = get_accel_slave_descr,
-#else
-	.get_slave_descr = NULL,
-#endif
-	.adapt_num   = 0,
-	.bus         = EXT_SLAVE_BUS_SECONDARY,
-	.address     = 0x0F,
-	.orientation = { 0, -1, 0, -1, 0, 0, 0, 0, -1 },  /* Orientation matrix for Kionix on ventana */
-	},
-
-	.compass = {
-#ifdef CONFIG_MPU_SENSORS_AK8975
-	.get_slave_descr = get_compass_slave_descr,
-#else
-	.get_slave_descr = NULL,
-#endif
-	.adapt_num   = 4,            /* bus number 4 on ventana */
-	.bus         = EXT_SLAVE_BUS_PRIMARY,
-	.address     = 0x0C,
-	.orientation = { 1, 0, 0, 0, -1, 0, 0, 0, -1 },  /* Orientation matrix for AKM on ventana */
-	},
+static struct mpu_platform_data mpu3050_data = {
+	.int_config	= 0x10,
+	.level_shifter	= 0,
+	.orientation	= MPU_GYRO_ORIENTATION,	/* Located in board_[platformname].h	*/
 };
 
-static struct i2c_board_info __initdata mpu3050_i2c0_boardinfo[] = {
+static struct ext_slave_platform_data mpu3050_accel_data = {
+	.address	= MPU_ACCEL_ADDR,
+	.irq		= 0,
+	.adapt_num	= MPU_ACCEL_BUS_NUM,
+	.bus		= EXT_SLAVE_BUS_SECONDARY,
+	.orientation	= MPU_ACCEL_ORIENTATION,	/* Located in board_[platformname].h	*/
+};
+
+static struct ext_slave_platform_data mpu_compass_data = {
+	.address	= MPU_COMPASS_ADDR,
+	.irq		= 0,
+	.adapt_num	= MPU_COMPASS_BUS_NUM,
+	.bus		= EXT_SLAVE_BUS_PRIMARY,
+	.orientation	= MPU_COMPASS_ORIENTATION,	/* Located in board_[platformname].h	*/
+};
+
+static struct i2c_board_info __initdata inv_mpu_i2c2_board_info[] = {
 	{
-		I2C_BOARD_INFO(SENSOR_MPU_NAME, 0x68),
-		.irq = TEGRA_GPIO_TO_IRQ(TEGRA_GPIO_PZ4),
+		I2C_BOARD_INFO(MPU_GYRO_NAME, MPU_GYRO_ADDR),
+		.irq = TEGRA_GPIO_TO_IRQ(MPU_GYRO_IRQ_GPIO),
 		.platform_data = &mpu3050_data,
 	},
+	{
+		I2C_BOARD_INFO(MPU_ACCEL_NAME, MPU_ACCEL_ADDR),
+#if	MPU_ACCEL_IRQ_GPIO
+		.irq = TEGRA_GPIO_TO_IRQ(MPU_ACCEL_IRQ_GPIO),
+#endif
+		.platform_data = &mpu3050_accel_data,
+	},
 };
 
-static void ventana_mpuirq_init(void)
+static struct i2c_board_info __initdata inv_mpu_i2c4_board_info[] = {
+	{
+		I2C_BOARD_INFO(MPU_COMPASS_NAME, MPU_COMPASS_ADDR),
+#if	MPU_COMPASS_IRQ_GPIO
+		.irq = TEGRA_GPIO_TO_IRQ(MPU_COMPASS_IRQ_GPIO),
+#endif
+		.platform_data = &mpu_compass_data,
+	},
+};
+
+static void mpuirq_init(void)
 {
-	pr_info("*** MPU START *** ventana_mpuirq_init...\n");
-	tegra_gpio_enable(TEGRA_GPIO_PZ4);
-	gpio_request(TEGRA_GPIO_PZ4, SENSOR_MPU_NAME);
-	gpio_direction_input(TEGRA_GPIO_PZ4);
-	pr_info("*** MPU END *** ventana_mpuirq_init...\n");
+	int ret = 0;
+
+	pr_info("*** MPU START *** mpuirq_init...\n");
+
+#if	MPU_ACCEL_IRQ_GPIO
+	/* ACCEL-IRQ assignment */
+	tegra_gpio_enable(MPU_ACCEL_IRQ_GPIO);
+	ret = gpio_request(MPU_ACCEL_IRQ_GPIO, MPU_ACCEL_NAME);
+	if (ret < 0) {
+		pr_err("%s: gpio_request failed %d\n", __func__, ret);
+		return;
+	}
+
+	ret = gpio_direction_input(MPU_ACCEL_IRQ_GPIO);
+	if (ret < 0) {
+		pr_err("%s: gpio_direction_input failed %d\n", __func__, ret);
+		gpio_free(MPU_ACCEL_IRQ_GPIO);
+		return;
+	}
+#endif
+
+	/* MPU-IRQ assignment */
+	tegra_gpio_enable(MPU_GYRO_IRQ_GPIO);
+	ret = gpio_request(MPU_GYRO_IRQ_GPIO, MPU_GYRO_NAME);
+	if (ret < 0) {
+		pr_err("%s: gpio_request failed %d\n", __func__, ret);
+		return;
+	}
+
+	ret = gpio_direction_input(MPU_GYRO_IRQ_GPIO);
+	if (ret < 0) {
+		pr_err("%s: gpio_direction_input failed %d\n", __func__, ret);
+		gpio_free(MPU_GYRO_IRQ_GPIO);
+		return;
+	}
+	pr_info("*** MPU END *** mpuirq_init...\n");
+
+	i2c_register_board_info(MPU_GYRO_BUS_NUM, inv_mpu_i2c2_board_info,
+		ARRAY_SIZE(inv_mpu_i2c2_board_info));
+	i2c_register_board_info(MPU_COMPASS_BUS_NUM, inv_mpu_i2c4_board_info,
+		ARRAY_SIZE(inv_mpu_i2c4_board_info));
 }
 #endif
 
@@ -743,16 +746,15 @@ int __init ventana_sensors_init(void)
 {
 	struct board_info BoardInfo;
 
-//Eric-0425 begin
-//add light sensor driver
+//Eric-0825 begin
+//add sensor irq init
 	ventana_al3000a_ls_init();
-//#ifdef CONFIG_SENSORS_AK8975
 	ventana_akm8975_init();
-//#endif
 	ventana_kxtf9_init();
-//Eric-0425 end
+//Eric-0825 end
+
 #ifdef CONFIG_MPU_SENSORS_MPU3050
-	ventana_mpuirq_init();
+	mpuirq_init();
 #endif
 	ventana_camera_init();
 	ventana_nct1008_init();
@@ -769,14 +771,12 @@ int __init ventana_sensors_init(void)
 	 * since they have the necessary hardware rework
 	 */
 	if (BoardInfo.sku > 0) {
-		ventana_bq20z75_init();
 		i2c_register_board_info(2, ventana_i2c2_board_info,
 			ARRAY_SIZE(ventana_i2c2_board_info));
 	}
 #else
 	i2c_register_board_info(2, ventana_i2c2_board_info,
 	                        ARRAY_SIZE(ventana_i2c2_board_info));
-
 	ventana_ECBat_init();
 #endif
 
@@ -799,16 +799,10 @@ int __init ventana_sensors_init(void)
 	//i2c_register_board_info(8, ventana_i2c8_board_info,
 	//	ARRAY_SIZE(ventana_i2c8_board_info));
 
-
-#ifdef CONFIG_MPU_SENSORS_MPU3050
-	i2c_register_board_info(0, mpu3050_i2c0_boardinfo,
-		ARRAY_SIZE(mpu3050_i2c0_boardinfo));
-#endif
-
 	return 0;
 }
 
-#if 0
+#if 0  // Compal Indigo-Carl ++
 #ifdef CONFIG_TEGRA_CAMERA
 
 struct tegra_camera_gpios {
@@ -859,12 +853,6 @@ int __init ventana_camera_late_init(void)
 		return PTR_ERR(cam_ldo6);
 	}
 
-	ret = regulator_set_voltage(cam_ldo6, 1800*1000, 1800*1000);
-	if (ret){
-		pr_err("%s: Failed to set ldo6 to 1.8v\n", __func__);
-		goto fail_put_regulator;
-	}
-
 	ret = regulator_enable(cam_ldo6);
 	if (ret){
 		pr_err("%s: Failed to enable ldo6\n", __func__);
@@ -913,4 +901,4 @@ fail_put_regulator:
 late_initcall(ventana_camera_late_init);
 
 #endif /* CONFIG_TEGRA_CAMERA */
-#endif
+#endif  // Compal Indigo-Carl --

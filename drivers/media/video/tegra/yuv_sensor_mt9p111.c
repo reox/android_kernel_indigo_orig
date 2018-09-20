@@ -323,6 +323,84 @@ static int get_sensor_current_width(struct i2c_client *client, u16 *val, u16 reg
 	return 0;
 }
 
+/* Compal Indigo-Carl 2011.08.12 begin */
+/* Check OTPM to read module info */
+static int check_otpm_module(struct i2c_client *client)
+{
+	int err;
+	u16 vid, mid;
+	int moduleInfo;
+
+	pr_debug("yuv5 %s\n", __func__);
+
+	// LOGICAL_ADDRESS_ACCESS [IO_NV_MEM_COMMAND]
+	err = sensor_write_reg16(client, 0x098E, 0x6024);
+        if (err) {
+		pr_err("yuv5 %s: LOGICAL_ADDRESS_ACCESS error\n", __func__);
+                return -1;
+        }
+
+	// IO_NV_MEM_ADDR
+	// OTPM address want to read (vendor id)
+        err = sensor_write_reg16(client, 0xE024, 0x02CC);
+        if (err) {
+		pr_err("yuv5 %s: IO_NV_MEM_ADDR (addr: 0x02CC) error\n", __func__);
+                return -1;
+        }
+
+	// IO_NV_MEM_COMMAND
+	err = sensor_write_reg16(client, 0xE02A, 0xA010);
+        if (err) {
+                pr_err("yuv5 %s: IO_NV_MEM_COMMAND error\n", __func__);
+                return -1;
+        }
+
+	msleep(100);
+
+	// IO_NV_MEM_DATA
+	err = sensor_read_reg(client, 0xE026, &vid);
+	if (err) {
+		pr_err("yuv5 %s: read 0xE026 error\n", __func__);
+		return -1;
+	}
+	pr_info("yuv5 %s: read 0xE026, vendor id = %x\n", __func__, vid);
+
+	if(vid == 0xFFFF)
+	    moduleInfo = 1;
+	else
+	    moduleInfo = 2;
+
+#if 0
+	// IO_NV_MEM_ADDR
+	// OTPM address want to read (module version)
+	err = sensor_write_reg16(client, 0xE024, 0x02CE);
+	if (err) {
+		pr_err("yuv5 %s: IO_NV_MEM_ADDR (addr: 0x02CC) error\n", __func__);
+		return -1;
+	}
+
+	// IO_NV_MEM_COMMAND
+	err = sensor_write_reg16(client, 0xE02A, 0xA010);
+	if (err) {
+		pr_err("yuv5 %s: IO_NV_MEM_COMMAND error\n", __func__);
+		return -1;
+	}
+
+	msleep(100);
+
+	// IO_NV_MEM_DATA
+	err = sensor_read_reg(client, 0xE026, &mid);
+	if (err) {
+		pr_err("yuv5 %s: read 0xE026 error\n", __func__);
+		return -1;
+	}
+	pr_info("yuv5 %s: read 0xE026, module version = %x\n", __func__, mid);
+#endif
+
+	return moduleInfo;
+}
+/* Compal Indigo-Carl 2011.08.12 end */
+
 static int check_otpm_mode(struct i2c_client *client)
 {
 	int err;
@@ -391,7 +469,7 @@ static int sensor_set_mode(struct sensor_info *info, struct sensor_5m_mode *mode
 	int err;
 	u16 val;
 
-	pr_info("yuv5 %s: xres %u yres %u\n", __func__, mode->xres, mode->yres);
+	pr_info("[MT9P111] ___ yuv5 %s: xres %u yres %u ___\n", __func__, mode->xres, mode->yres);
 
 	if (mode->xres == 2592 && mode->yres == 1944)
 		sensor_table = SENSOR_MODE_2592x1944;
@@ -509,6 +587,7 @@ static int sensor_set_mode(struct sensor_info *info, struct sensor_5m_mode *mode
 		otpm_mode = check_otpm_mode(info->i2c_client);
 		if (otpm_mode == 0) {
 			pr_info("yuv5 %s: value == 0x41, it means OTPM empty\n", __func__);
+			info->module_source = 0;
 			sensor_write_table(info->i2c_client, enable_PGA_patch_mem_table_start);
 			sensor_write_table(info->i2c_client, default_A_patch_ram_table);
 			sensor_write_table(info->i2c_client, default_CWF_patch_ram_table);
@@ -517,11 +596,17 @@ static int sensor_set_mode(struct sensor_info *info, struct sensor_5m_mode *mode
 		}
 		else if (otpm_mode == 1) {
 			pr_info("yuv5 %s: value == 0xC1, it means OPTM has data inside\n", __func__);
-		    /* Compal Indigo-Carl 110531 begin */
-		    /* load OTP table */
-			//sensor_write_table(info->i2c_client, enable_PGA_OTPM_table);
-			sensor_write_table(info->i2c_client, enable_OTP_2_table);
-		    /* Compal Indigo-Carl end */
+		    /* Compal Indigo-Carl 2011.05.31 begin */
+		    /* load OTP table based on different modules */
+			info->module_source = check_otpm_module(info->i2c_client);
+			if (info->module_source == 1) {
+			    pr_info("yuv5 %s: first source\n", __func__);
+			    sensor_write_table(info->i2c_client, enable_PGA_OTPM_table);
+			} else if (info->module_source == 2) {
+			    pr_info("yuv5 %s: second source\n", __func__);
+			    sensor_write_table(info->i2c_client, enable_OTP_2_table);
+			}
+		    /* Compal Indigo-Carl 2011.05.31 end */
 		}
 #if defined(CONFIG_LSC_FROM_EC)
 		else if (otpm_mode == 2) {
@@ -848,6 +933,46 @@ static long sensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		}
 		return 0;
 	}
+    /* Compal Indigo-Carl ++ */
+    // focus window for touch focus
+	case SENSOR_5M_IOCTL_SET_FOCUS_WINDOW:
+	{
+		struct yuv5_focus_rect focusRect;
+
+		if (copy_from_user(&focusRect,
+				(const void __user *)arg,
+				sizeof(focusRect))) {
+			return -EFAULT;
+		}
+
+		if(focusRect.size_x <= 0 || focusRect.size_y <= 0) {
+			pr_info("yuv5 %s: set default focus window\n", __func__);
+			err = sensor_write_table(info->i2c_client, default_focus_window);
+			if(err) {
+				pr_err("yuv5 %s: set default focus window fail\n", __func__);
+				return err;
+			}
+		} else {
+			pr_info("yuv5 %s: set focus window (x,y,w,h) = (%d,%d,%d,%d)\n",
+				__func__, focusRect.start_x, focusRect.start_y,
+				focusRect.size_x, focusRect.size_y);
+
+			err = sensor_write_reg16(info->i2c_client, 0x098E, 0xB854);
+			err = sensor_write_reg8(info->i2c_client, 0xB854, (u8)focusRect.start_x);
+			err = sensor_write_reg8(info->i2c_client, 0xB855, (u8)focusRect.start_y);
+			err = sensor_write_reg8(info->i2c_client, 0xB856, (u8)focusRect.size_x);
+			err = sensor_write_reg8(info->i2c_client, 0xB857, (u8)focusRect.size_y);
+			err = sensor_write_reg8(info->i2c_client, 0x8404, 0x06);
+
+			if(err) {
+				pr_err("yuv5 %s: set focus window fail\n", __func__);
+				return err;
+			}
+		}
+
+		return 0;
+	}
+    /* Compal Indigo-Carl -- */
 	default:
 		return -EINVAL;
 	}

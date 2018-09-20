@@ -318,7 +318,8 @@ typedef enum {
     CONFIG_VIRTUAL_KEYS		= 0x08,	
     CONFIG_NUM_SENSORS		= 0x10,
     CONFIG_TOUCH_SCREEN_BORDER = 0x20,
-    CONFIG_DEBUG_PRINT		= 0x40
+    CONFIG_DEBUG_PRINT		= 0x40,
+    CONFIG_DRIVER_VERSION	= 0x80,
 } DISPATCHER_CONFIGURATION;	
 
 
@@ -326,6 +327,20 @@ typedef union {
     uint16_t msg_len;
     uint8_t buf[2];
 } len_u, *p_len_u;
+
+typedef enum _calib_result {
+	CALIB_SUCCESS = 0,
+	CALIB_FAIL,
+	CALIB_IN_PROGRESS
+}calib_result;
+
+/* calibration status from firmware */
+#define CALIB_OK_BYT_1 0x21
+#define CALIB_OK_BYT_2 0x21
+#define CALIB_FAIL_BYT_1 0x42
+#define CALIB_FAIL_BYT_2 0x42
+#define CALIB_PRGRS_BYT_1 0x63
+#define CALIB_PRGRS_BYT_2 0x63
 
 
 

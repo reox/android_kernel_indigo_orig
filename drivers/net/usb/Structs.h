@@ -79,6 +79,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <linux/version.h>
 #include <linux/cdev.h>
 #include <linux/kthread.h>
+#include <linux/poll.h>
 
 #if (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,24 ))
    #include "usbnet.h"
@@ -180,6 +181,9 @@ typedef struct sClientMemList
    /* Next entry in linked list */
    struct sClientMemList *      mpNext;
 
+   /* Wait queue object for poll() */
+   wait_queue_head_t    mWaitQueue;
+
 } sClientMemList;
 
 /*=========================================================================*/
@@ -235,6 +239,9 @@ typedef struct sAutoPM
    /* URB list lock (for adding and removing elements) */
    spinlock_t                 mURBListLock;
 
+   /* Length of the URB list */
+   atomic_t                   mURBListLen;
+   
    /* Active URB */
    struct urb *               mpActiveURB;
 
@@ -329,6 +336,12 @@ typedef struct sGobiUSBNet
 
    /* AutoPM thread */
    sAutoPM                mAutoPM;
+
+   /* Ethernet header templates */
+   /* IPv4 */
+   u8  eth_hdr_tmpl_ipv4[ETH_HLEN];
+   /* IPv6 */
+   u8  eth_hdr_tmpl_ipv6[ETH_HLEN];
 
 } sGobiUSBNet;
 

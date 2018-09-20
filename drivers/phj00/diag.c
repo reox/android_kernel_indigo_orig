@@ -28,6 +28,9 @@ static struct kobject *diag_kobj;
 static ssize_t sku_show(struct kobject*, struct kobj_attribute*, char*);
 static ssize_t sku_store(struct kobject*, struct kobj_attribute*, char*);
 
+static ssize_t wp_show(struct kobject*, struct kobj_attribute*, char*);
+static ssize_t wp_store(struct kobject*, struct kobj_attribute*, char*);
+
 #define DIAG_ATTR(_name) \
          static struct kobj_attribute _name##_attr = { \
          .attr = { .name = __stringify(_name), .mode = 0660}, \
@@ -36,9 +39,11 @@ static ssize_t sku_store(struct kobject*, struct kobj_attribute*, char*);
          }
 
 DIAG_ATTR(sku);
+DIAG_ATTR(wp);
 
 static struct attribute * attributes[] = {
 	&sku_attr.attr,
+	&wp_attr.attr,
         NULL,
 };
 
@@ -70,6 +75,15 @@ static ssize_t sku_store(struct kobject* kobj, struct kobj_attribute* kobj_attr,
 }
 //sku end
 /*Joe Lee-0517 end*/
+static ssize_t wp_show(struct kobject* kobj, struct kobj_attribute* kobj_attr, char* buf)
+{
+    return sprintf(buf, "%d\n", gpio_get_value(57));
+}
+
+static ssize_t wp_store(struct kobject* kobj, struct kobj_attribute* kobj_attr, char* buf)
+{
+	return 0;
+}
 
 extern void SysShutdown(void);
 extern void SysRestart(void);
